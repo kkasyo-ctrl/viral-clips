@@ -5,7 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
-
+.claude/
 # Distribution / packaging
 .Python
 build/
@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Pipeline data: keep the folder layout, not the media or transcripts
+Data/Input_video/*
+Data/Transcripts/*
+Data/clips/*
+!Data/*/.gitkeep
