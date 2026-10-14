@@ -3,6 +3,7 @@
     python main.py                              # every video in Data/Input_video
     python main.py episode.mp4                  # one video (a path, or a file name inside Data/Input_video)
     python main.py --threshold 0 --no-render    # tuning: score every moment, render nothing
+    python main.py episode.mp4 --no-reframe     # keep the source aspect ratio
 """
 import argparse
 import json
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import config
-from utils import audio, captions, cutting, jev_client, moments, render, transcript
+from utils import audio, captions, cutting, jev_client, moments, reframe, render, transcript
 from utils.cutting import Cut
 from utils.openai_client import Moment
 from utils.transcript import format_timestamp
@@ -29,9 +30,12 @@ class Candidate:
     cut: Cut
     text: str
     scores: dict[str, float] | None
+    crop: dict | None = None  # the crop plan this clip was reframed with, if any
 
 
-def process(video: Path, threshold: float, top_n: int | None, render_clips: bool) -> None:
+def process(
+    video: Path, threshold: float, top_n: int | None, render_clips: bool, reframe_clips: bool
+) -> None:
     log.info("=== %s ===", video.name)
 
     # 1. Audio extraction (+ silences, reused for chunk splitting and cut points)
@@ -49,6 +53,8 @@ def process(video: Path, threshold: float, top_n: int | None, render_clips: bool
         "\n".join(transcript.format_line(s) for s in sentences) + "\n", encoding="utf-8"
     )
     log.info("Transcript: %d words, %d sentences", len(words), len(sentences))
+    if words and not transcript.has_diarization(words):
+        log.warning("Transcript has no speaker IDs; every clip will be reframed as single-speaker")
     if not sentences:
         log.warning("No speech found; skipping")
         return
@@ -76,20 +82,38 @@ def process(video: Path, threshold: float, top_n: int | None, render_clips: bool
 
     out_dir = config.CLIPS_DIR / video.stem
     out_dir.mkdir(parents=True, exist_ok=True)
+    report_file = out_dir / "moments.json"
     names = {id(c): f"{rank:02d}_{_slug(c.moment.title)}" for rank, c in enumerate(kept, 1)}
-    _write_report(out_dir / "moments.json", video, ranked, names, threshold)
+    # Carry the crops an earlier run worked out, so re-rendering doesn't redo face analysis.
+    recorded = _recorded_crops(report_file)
+    for c in kept:
+        c.crop = recorded.get(_crop_key(c.cut))
+    _write_report(report_file, video, ranked, names, threshold)
     if not render_clips:
         return
 
-    # 7 + 8. Captions and render
-    width, height = render.video_size(video)
+    # 7 + 8 + 9. Captions and the crop plan, then one encode that applies both
+    info = render.probe_video(video)
     for i, c in enumerate(kept, 1):
         name = names[id(c)]
+        video_filter = ""
+        width, height = info.width, info.height
+        if reframe_clips:
+            plan = reframe.plan(video, c.cut, words, info, c.crop)
+            c.crop = plan.to_dict()
+            video_filter = reframe.crop_filter(plan)
+            width, height = plan.output_width, plan.output_height
+        # Captions are written for the frame the clip is delivered in, and burned into it
+        # by the same encode; the .srt alongside keeps the clip's own timings either way.
         lines = captions.build_lines(c.cut, sentences, words)
         captions.write_ass(lines, out_dir / f"{name}.ass", width, height)
         captions.write_srt(lines, out_dir / f"{name}.srt")
-        log.info("Rendering %d/%d: %s (%.0fs)", i, len(kept), name, c.cut.duration)
-        render.render_clip(video, c.cut.start, c.cut.end, out_dir / f"{name}.ass", out_dir / f"{name}.mp4")
+        log.info("Rendering %d/%d: %s (%.0fs, %dx%d)", i, len(kept), name, c.cut.duration, width, height)
+        render.render_clip(
+            video, c.cut.start, c.cut.end,
+            out_dir / f"{name}.ass", out_dir / f"{name}.mp4", video_filter,
+        )
+    _write_report(report_file, video, ranked, names, threshold)  # again, with the crops used
     log.info("Clips written to %s", out_dir)
 
 
@@ -122,11 +146,33 @@ def _write_report(path: Path, video: Path, ranked: list[Candidate], names: dict[
                 "duration": round(c.cut.duration, 2),
                 "sentences": [c.cut.first_sentence, c.cut.last_sentence],
                 "transcript": c.text,
+                **({"crop": c.crop} if c.crop else {}),
             }
             for c in ranked
         ],
     }
     path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _crop_key(cut: Cut) -> tuple[float, float]:
+    """A clip's cut window, which is what a crop plan was planned against."""
+    return round(cut.start, 3), round(cut.end, 3)
+
+
+def _recorded_crops(path: Path) -> dict[tuple[float, float], dict]:
+    """Crop plans from an earlier run of this video, keyed on their cut window."""
+    if not path.is_file():
+        return {}
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        log.warning("Could not read %s; crops will be planned from scratch", path.name)
+        return {}
+    return {
+        (round(m["start"], 3), round(m["end"], 3)): m["crop"]
+        for m in report.get("moments", [])
+        if m.get("crop")
+    }
 
 
 def _slug(title: str, max_len: int = 48) -> str:
@@ -154,7 +200,10 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=config.PROB_THRESHOLD,
                         help="minimum p_viral for a moment to become a clip (default: %(default)s)")
     parser.add_argument("--top-n", type=int, help="render at most this many clips per video")
-    parser.add_argument("--no-render", action="store_true", help="score and report moments without rendering")
+    parser.add_argument("--no-render", action="store_true",
+                        help="score and report moments without rendering (also skips reframing)")
+    parser.add_argument("--no-reframe", action="store_true",
+                        help="render at the source aspect ratio instead of cropping to vertical")
     args = parser.parse_args()
 
     for stream in (sys.stdout, sys.stderr):  # a title the console can't encode must not crash the run
@@ -170,7 +219,10 @@ def main() -> None:
     failed = 0
     for video in videos:
         try:
-            process(video, args.threshold, args.top_n, not args.no_render)
+            process(
+                video, args.threshold, args.top_n,
+                not args.no_render, config.REFRAME and not args.no_reframe,
+            )
         except Exception:
             failed += 1
             log.exception("Failed on %s", video.name)

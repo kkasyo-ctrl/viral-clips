@@ -1,0 +1,17 @@
+utils/clipsai_resize/ is a copy of the `resize` package from Clips AI 0.2.1
+(https://github.com/ClipsAI/clipsai), used under the MIT License. The full license
+text, including the Clips AI copyright notice, is in LICENSE in this directory.
+
+The copy is not verbatim. Each module's docstring lists its local changes; in summary:
+
+- clipsai.media.video_file.VideoFile  -> video_file.VideoFile, a value object holding
+  the five properties the package reads, probed once with ffprobe by the caller.
+- clipsai.utils.pytorch / .conversions -> compute.py, which reimplements the three
+  functions used without psutil or pynvml.
+- clipsai.media.editor.MediaEditor    -> dropped; it was assigned and never used.
+- clipsai/resize/resize.py            -> not copied. It was the Pyannote-diarizing
+  entry point; utils/reframe.py drives the Resizer instead, with speaker segments
+  taken from the cached Scribe transcript.
+- Segment gained a `found_face` flag and detect_scenes gained a time window.
+
+Nothing in this directory imports WhisperX or Pyannote.

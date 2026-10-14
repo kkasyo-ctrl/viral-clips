@@ -24,7 +24,8 @@ def transcribe(audio_path: Path, attempts: int = 4) -> dict:
 
     form = {
         "model_id": config.SCRIBE_MODEL,
-        "diarize": "true",
+        # Per-word speaker IDs; the reframing step groups them into speaker turns.
+        "diarize": "true" if config.SCRIBE_DIARIZE else "false",
         "timestamps_granularity": "word",
         "tag_audio_events": "true",
     }

@@ -3,3 +3,15 @@ openai>=1.84
 pydantic>=2.7
 python-dotenv>=1.0
 typesafe-sdk>=0.7.2
+
+# Reframing to vertical (step 9). All local: no API keys, nothing leaves the machine.
+av>=12.0
+facenet-pytorch>=2.6
+# Clips AI's Resizer reads mouth movement through mediapipe's legacy solutions API,
+# which 0.10.22 removed; newer releases ship only mediapipe.tasks.
+mediapipe>=0.10.14,<0.10.22
+numpy>=1.26
+opencv-python>=4.9
+scenedetect>=0.6.3
+scikit-learn>=1.4
+torch>=2.2

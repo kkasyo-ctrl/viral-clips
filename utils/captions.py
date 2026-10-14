@@ -1,4 +1,10 @@
-"""Step 7: karaoke captions as ASS (burned in) plus a plain SRT sidecar, straight from Scribe word timings."""
+"""Step 7: karaoke captions as ASS (burned in) plus a plain SRT sidecar, straight from Scribe word timings.
+
+The ASS is what the viewer sees: the render step draws it onto the frame, so the words
+travel with the video whatever the platform does with sidecar files. It is written for
+the frame the clip is actually delivered in, which for a reframed clip is the vertical
+one -- see `_layout` for where the words sit in it.
+"""
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,11 +65,24 @@ def _slots(lines: list[list[CaptionWord]]) -> list[list[tuple[int, int]]]:
     return slots
 
 
-def write_ass(lines: list[list[CaptionWord]], path: Path, width: int, height: int) -> None:
+def _layout(width: int, height: int) -> tuple[int, int, int, int]:
+    """(font size, outline, bottom margin, side margin) in pixels for this frame.
+
+    Captions are bottom-anchored, so the bottom margin is what decides where they sit.
+    A vertical frame reserves the safe zone every short-form platform draws its own UI
+    into -- caption, handle and buttons along the bottom, action column down the side --
+    which lands the words in the lower third and clear of all of it. A landscape frame
+    keeps the old baseline, where nothing is covering the picture.
+    """
     font_size = round(min(width, height) * 0.075)
     outline = max(2, round(font_size * 0.09))
-    margin_v = round(height * (1 - config.CAPTION_BASELINE))  # bottom-anchored, so the baseline sits at ~72%
-    margin_h = round(width * 0.06)
+    if height > width:
+        return font_size, outline, round(height * config.CAPTION_SAFE_BOTTOM), round(width * config.CAPTION_SAFE_SIDE)
+    return font_size, outline, round(height * (1 - config.CAPTION_BASELINE)), round(width * 0.06)
+
+
+def write_ass(lines: list[list[CaptionWord]], path: Path, width: int, height: int) -> None:
+    font_size, outline, margin_v, margin_h = _layout(width, height)
     r, g, b = (config.CAPTION_HIGHLIGHT.lstrip("#")[i : i + 2] for i in (0, 2, 4))
     highlight = f"&H{b}{g}{r}&".upper()
 

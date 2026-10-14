@@ -1,4 +1,5 @@
 """Step 2: Scribe transcription normalised into words and sentences, cached on a hash of the audio."""
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -10,6 +11,9 @@ from utils import audio, elevenlabs_client
 from utils.audio import Silence
 
 log = logging.getLogger(__name__)
+
+# What normalize_words falls back to when Scribe returns no speaker_id for a word.
+NO_SPEAKER = "speaker"
 
 _TERMINAL = (".", "?", "!", "…")
 _CLOSERS = "\"'”’)]}»"
@@ -40,16 +44,34 @@ def format_timestamp(seconds: float) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
+def cache_key(audio_hash: str) -> str:
+    """Cache key for one transcript: the audio hash plus the settings that change what
+    Scribe sends back.
+
+    Diarization is in the key because reframing reads the per-word speaker IDs, and a
+    transcript taken without it has none to read. Keying on the audio alone would hand
+    those older, speaker-less transcripts straight back.
+    """
+    settings = f"diarize={int(config.SCRIBE_DIARIZE)}"
+    return hashlib.sha256(f"{audio_hash}|{settings}".encode()).hexdigest()[:16]
+
+
+def has_diarization(words: list["Word"]) -> bool:
+    """Whether Scribe labelled who was speaking, rather than falling back to one voice."""
+    return any(not word.speaker.endswith(NO_SPEAKER) for word in words)
+
+
 def load_or_transcribe(
     video: Path, wav: Path, audio_hash: str, duration: float, silences: list[Silence]
 ) -> tuple[list[Word], Path]:
     """Return the word list and the cache file it lives in. Scribe only runs on a cache miss."""
-    cached = next(iter(sorted(config.TRANSCRIPTS_DIR.glob(f"*.{audio_hash[:16]}.json"))), None)
+    key = cache_key(audio_hash)
+    cached = next(iter(sorted(config.TRANSCRIPTS_DIR.glob(f"*.{key}.json"))), None)
     if cached:
         log.info("Transcript cache hit: %s", cached.name)
         data = json.loads(cached.read_text(encoding="utf-8"))
     else:
-        cached = config.TRANSCRIPTS_DIR / f"{video.stem}.{audio_hash[:16]}.json"
+        cached = config.TRANSCRIPTS_DIR / f"{video.stem}.{key}.json"
         data = _transcribe(video, wav, audio_hash, duration, silences)
         config.TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
         partial = cached.with_name(cached.name + ".tmp")
@@ -84,6 +106,7 @@ def _transcribe(video: Path, wav: Path, audio_hash: str, duration: float, silenc
         "audio_sha256": audio_hash,
         "source": video.name,
         "model": config.SCRIBE_MODEL,
+        "diarize": config.SCRIBE_DIARIZE,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "duration": duration,
         "chunks": chunks,
