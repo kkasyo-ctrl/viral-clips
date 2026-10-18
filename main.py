@@ -1,183 +1,48 @@
 """Find the viral moments in long videos and cut them into captioned clips.
 
-    python main.py                              # every video in Data/Input_video
-    python main.py episode.mp4                  # one video (a path, or a file name inside Data/Input_video)
-    python main.py --threshold 0 --no-render    # tuning: score every moment, render nothing
-    python main.py episode.mp4 --no-reframe     # keep the source aspect ratio
+Each stage runs on its own and picks up where the last one left off on disk:
+
+    python main.py transcribe [videos]   # ElevenLabs Scribe -> Data/Transcripts (cached; never runs twice)
+    python main.py find [videos]         # GPT picks moments  -> Data/clips/<video>/moments.json
+    python main.py score [videos]        # Jev scores them    -> scores added to moments.json
+    python main.py render [videos]       # cut, caption, reframe, encode (no API calls)
+    python main.py run [videos]          # all four in a row (also what `python main.py` alone does)
+
+Videos are paths or file names inside Data/Input_video; with none given, every video there.
+
+    python main.py render --threshold 0.3 --top-n 5   # render the best five over 0.3
+    python main.py render --no-reframe                # keep the source aspect ratio
+    python main.py run --no-render                    # everything up to the scores
 """
 import argparse
-import json
 import logging
-import re
 import sys
-import tempfile
-import unicodedata
-from dataclasses import dataclass
 from pathlib import Path
 
 import config
-from utils import audio, captions, cutting, jev_client, moments, reframe, render, transcript
-from utils.cutting import Cut
-from utils.openai_client import Moment
-from utils.transcript import format_timestamp
+import pipeline
+from utils import audio
 
 log = logging.getLogger("viral_clips")
 
-
-@dataclass
-class Candidate:
-    moment: Moment
-    cut: Cut
-    text: str
-    scores: dict[str, float] | None
-    crop: dict | None = None  # the crop plan this clip was reframed with, if any
+COMMANDS = ("transcribe", "find", "score", "render", "run")
 
 
-def process(
-    video: Path, threshold: float, top_n: int | None, render_clips: bool, reframe_clips: bool
-) -> None:
-    log.info("=== %s ===", video.name)
-
-    # 1. Audio extraction (+ silences, reused for chunk splitting and cut points)
-    with tempfile.TemporaryDirectory(prefix="viral_clips_") as tmp:
-        wav = Path(tmp) / "audio.wav"
-        silences = audio.extract_audio(video, wav)
-        duration = audio.wav_duration(wav)
-        audio_hash = audio.file_sha256(wav)
-        log.info("Audio: %s long, %d silences", format_timestamp(duration), len(silences))
-
-        # 2. Transcription (cached on the audio hash)
-        words, transcript_file = transcript.load_or_transcribe(video, wav, audio_hash, duration, silences)
-    sentences = transcript.group_sentences(words)
-    transcript_file.with_suffix(".txt").write_text(
-        "\n".join(transcript.format_line(s) for s in sentences) + "\n", encoding="utf-8"
-    )
-    log.info("Transcript: %d words, %d sentences", len(words), len(sentences))
-    if words and not transcript.has_diarization(words):
-        log.warning("Transcript has no speaker IDs; every clip will be reframed as single-speaker")
-    if not sentences:
-        log.warning("No speech found; skipping")
+def run_stage(command: str, video: Path, args: argparse.Namespace) -> None:
+    log.info("=== %s: %s ===", command, video.name)
+    media = pipeline.load_media(video, allow_transcribe=command in ("transcribe", "run"))
+    if command == "transcribe":
         return
-
-    # 3. Moment extraction
-    found = moments.find_moments(sentences)
-    log.info("%s proposed %d moments", config.MOMENTS_MODEL, len(found))
-    if not found:
-        return
-
-    # 6. Cut points, planned before scoring so Jev judges exactly the words the viewer will hear
-    cuts = [cutting.plan_cut(m.start_sentence, m.end_sentence, sentences, words, silences, duration) for m in found]
-    texts = [cutting.clip_transcript(c, sentences, words) for c in cuts]
-
-    # 4. Virality probabilities
-    scores = jev_client.score_clips(
-        [{"clip_transcript": t, "clip_duration_seconds": round(c.duration, 1)} for c, t in zip(cuts, texts)]
-    )
-    candidates = [Candidate(m, c, t, s) for m, c, t, s in zip(found, cuts, texts, scores)]
-
-    # 5. Threshold
-    ranked = sorted((c for c in candidates if c.scores), key=lambda c: c.scores["p_viral"], reverse=True)
-    kept = [c for c in ranked if c.scores["p_viral"] >= threshold][:top_n]
-    _print_table(ranked, len(kept), threshold)
-
-    out_dir = config.CLIPS_DIR / video.stem
-    out_dir.mkdir(parents=True, exist_ok=True)
-    report_file = out_dir / "moments.json"
-    names = {id(c): f"{rank:02d}_{_slug(c.moment.title)}" for rank, c in enumerate(kept, 1)}
-    # Carry the crops an earlier run worked out, so re-rendering doesn't redo face analysis.
-    recorded = _recorded_crops(report_file)
-    for c in kept:
-        c.crop = recorded.get(_crop_key(c.cut))
-    _write_report(report_file, video, ranked, names, threshold)
-    if not render_clips:
-        return
-
-    # 7 + 8 + 9. Captions and the crop plan, then one encode that applies both
-    info = render.probe_video(video)
-    for i, c in enumerate(kept, 1):
-        name = names[id(c)]
-        video_filter = ""
-        width, height = info.width, info.height
-        if reframe_clips:
-            plan = reframe.plan(video, c.cut, words, info, c.crop)
-            c.crop = plan.to_dict()
-            video_filter = reframe.crop_filter(plan)
-            width, height = plan.output_width, plan.output_height
-        # Captions are written for the frame the clip is delivered in, and burned into it
-        # by the same encode; the .srt alongside keeps the clip's own timings either way.
-        lines = captions.build_lines(c.cut, sentences, words)
-        captions.write_ass(lines, out_dir / f"{name}.ass", width, height)
-        captions.write_srt(lines, out_dir / f"{name}.srt")
-        log.info("Rendering %d/%d: %s (%.0fs, %dx%d)", i, len(kept), name, c.cut.duration, width, height)
-        render.render_clip(
-            video, c.cut.start, c.cut.end,
-            out_dir / f"{name}.ass", out_dir / f"{name}.mp4", video_filter,
-        )
-    _write_report(report_file, video, ranked, names, threshold)  # again, with the crops used
-    log.info("Clips written to %s", out_dir)
-
-
-def _print_table(ranked: list[Candidate], n_kept: int, threshold: float) -> None:
-    print(f"\n{'#':>3}  {'viral':>5}  {'self':>5}  {'payoff':>6}  {'cold':>5}  {'start':>8}  {'len':>4}  title")
-    for rank, c in enumerate(ranked, 1):
-        if rank == n_kept + 1:
-            print(f"{'':->3}  -- below threshold {threshold:.2f} or past --top-n --")
-        s = c.scores
-        print(
-            f"{rank:>3}  {s['p_viral']:5.2f}  {s['p_self_contained']:5.2f}  {s['p_has_payoff']:6.2f}  "
-            f"{s['p_opens_cold']:5.2f}  {format_timestamp(c.cut.start):>8}  {c.cut.duration:3.0f}s  {c.moment.title}"
-        )
-    print()
-
-
-def _write_report(path: Path, video: Path, ranked: list[Candidate], names: dict[int, str], threshold: float) -> None:
-    report = {
-        "source": video.name,
-        "threshold": threshold,
-        "moments": [
-            {
-                "clip": f"{names[id(c)]}.mp4" if id(c) in names else None,
-                "title": c.moment.title,
-                "reason": c.moment.reason,
-                **{k: round(v, 4) for k, v in c.scores.items()},
-                "start": round(c.cut.start, 3),
-                "end": round(c.cut.end, 3),
-                "start_hms": format_timestamp(c.cut.start),
-                "duration": round(c.cut.duration, 2),
-                "sentences": [c.cut.first_sentence, c.cut.last_sentence],
-                "transcript": c.text,
-                **({"crop": c.crop} if c.crop else {}),
-            }
-            for c in ranked
-        ],
-    }
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _crop_key(cut: Cut) -> tuple[float, float]:
-    """A clip's cut window, which is what a crop plan was planned against."""
-    return round(cut.start, 3), round(cut.end, 3)
-
-
-def _recorded_crops(path: Path) -> dict[tuple[float, float], dict]:
-    """Crop plans from an earlier run of this video, keyed on their cut window."""
-    if not path.is_file():
-        return {}
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        log.warning("Could not read %s; crops will be planned from scratch", path.name)
-        return {}
-    return {
-        (round(m["start"], 3), round(m["end"], 3)): m["crop"]
-        for m in report.get("moments", [])
-        if m.get("crop")
-    }
-
-
-def _slug(title: str, max_len: int = 48) -> str:
-    ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")[:max_len].rstrip("-") or "clip"
+    if command in ("find", "run"):
+        pipeline.find(media)
+    if command in ("score", "run"):
+        candidates = pipeline.score(media)
+        if command == "score":
+            pipeline.print_table(candidates, [], config.PROB_THRESHOLD)
+    if command == "render" or (command == "run" and not args.no_render):
+        pipeline.render_clips(media, args.threshold, args.top_n, config.REFRAME and not args.no_reframe)
+    elif command == "run":
+        pipeline.print_table(pipeline.load_candidates(media), [], config.PROB_THRESHOLD)
 
 
 def _resolve_videos(names: list[str]) -> list[Path]:
@@ -194,17 +59,35 @@ def _resolve_videos(names: list[str]) -> list[Path]:
     return videos
 
 
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Cut the viral moments out of long videos.",
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__,
+    )
+    sub = parser.add_subparsers(dest="command", required=True, metavar="command")
+    videos = argparse.ArgumentParser(add_help=False)
+    videos.add_argument("videos", nargs="*", help="video files (default: everything in Data/Input_video)")
+    rendering = argparse.ArgumentParser(add_help=False)
+    rendering.add_argument("--threshold", type=float, default=config.PROB_THRESHOLD,
+                           help="minimum p_viral for a moment to become a clip (default: %(default)s)")
+    rendering.add_argument("--top-n", type=int, help="render at most this many clips per video")
+    rendering.add_argument("--no-reframe", action="store_true",
+                           help="render at the source aspect ratio instead of cropping to vertical")
+
+    sub.add_parser("transcribe", parents=[videos], help="transcribe with ElevenLabs (skipped if cached)")
+    sub.add_parser("find", parents=[videos], help="ask the LLM for moments; overwrites moments.json")
+    sub.add_parser("score", parents=[videos], help="score the moments in moments.json with Jev")
+    sub.add_parser("render", parents=[videos, rendering], help="cut and render clips from moments.json (no API calls)")
+    run = sub.add_parser("run", parents=[videos, rendering], help="every stage in order")
+    run.add_argument("--no-render", action="store_true", help="stop after scoring")
+    return parser
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Cut the viral moments out of long videos.")
-    parser.add_argument("videos", nargs="*", help="video files (default: everything in Data/Input_video)")
-    parser.add_argument("--threshold", type=float, default=config.PROB_THRESHOLD,
-                        help="minimum p_viral for a moment to become a clip (default: %(default)s)")
-    parser.add_argument("--top-n", type=int, help="render at most this many clips per video")
-    parser.add_argument("--no-render", action="store_true",
-                        help="score and report moments without rendering (also skips reframing)")
-    parser.add_argument("--no-reframe", action="store_true",
-                        help="render at the source aspect ratio instead of cropping to vertical")
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    if not argv or argv[0] not in COMMANDS + ("-h", "--help"):
+        argv = ["run", *argv]  # `python main.py [videos]` keeps running the whole pipeline
+    args = _parser().parse_args(argv)
 
     for stream in (sys.stdout, sys.stderr):  # a title the console can't encode must not crash the run
         stream.reconfigure(errors="replace")
@@ -214,15 +97,12 @@ def main() -> None:
     audio.require_ffmpeg()
     videos = _resolve_videos(args.videos)
     if not videos:
-        parser.error(f"no videos found in {config.INPUT_DIR}")
+        raise SystemExit(f"no videos found in {config.INPUT_DIR}")
 
     failed = 0
     for video in videos:
         try:
-            process(
-                video, args.threshold, args.top_n,
-                not args.no_render, config.REFRAME and not args.no_reframe,
-            )
+            run_stage(args.command, video, args)
         except Exception:
             failed += 1
             log.exception("Failed on %s", video.name)

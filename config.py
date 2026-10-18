@@ -60,7 +60,7 @@ SILENCE_NOISE_DB = _float("SILENCE_NOISE_DB", -30.0)
 SILENCE_MIN_SECONDS = 0.3
 
 # 2. Transcription (ElevenLabs Scribe)
-SCRIBE_MODEL = os.getenv("SCRIBE_MODEL", "scribe_v1")
+SCRIBE_MODEL = os.getenv("SCRIBE_MODEL", "scribe_v2")
 # Reframing needs per-word speaker IDs, so diarization is on. It is part of the
 # transcript cache key: an older transcript taken without it has no speakers to read.
 SCRIBE_DIARIZE = _bool("SCRIBE_DIARIZE", True)
@@ -73,7 +73,7 @@ SCRIBE_SPLIT_SEARCH_SECONDS = 90  # how far either side of a 30-min mark to look
 
 # 3. Moment extraction (OpenAI)
 MOMENTS_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
-MOMENTS_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT") or None  # None = model default
+MOMENTS_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT") or "medium"  # None = model default
 MOMENTS_MAX_INPUT_TOKENS = _int("OPENAI_MAX_INPUT_TOKENS", 900_000)
 MOMENTS_WINDOW_SECONDS = 8 * 60
 MOMENTS_STRIDE_SECONDS = 6 * 60
@@ -87,7 +87,7 @@ PROB_THRESHOLD = _float("PROB_THRESHOLD", 0.6)
 
 # 6. Cut points
 START_PAD_SECONDS = 0.15
-END_PAD_SECONDS = 0.35
+END_PAD_SECONDS = _float("END_PAD_SECONDS", 1.0)  # tail after the last word; the audio fades out over it
 MIN_CLIP_SECONDS = 15.0
 MAX_CLIP_SECONDS = 90.0
 PAUSE_MIN_SECONDS = 0.4
@@ -124,5 +124,7 @@ REFRAME_FACE_DETECT_WIDTH = _int("REFRAME_FACE_DETECT_WIDTH", 960)
 
 # 9. Render
 RENDER_CRF = _int("RENDER_CRF", 17)
-RENDER_PRESET = os.getenv("RENDER_PRESET", "slow")
+RENDER_PRESET = os.getenv("RENDER_PRESET", "slow")  # libx264 only
+# auto = NVIDIA's GPU encoder (h264_nvenc) when it works on this machine, else libx264 on the CPU
+RENDER_ENCODER = os.getenv("RENDER_ENCODER", "auto")
 RENDER_AUDIO_BITRATE = os.getenv("RENDER_AUDIO_BITRATE", "256k")

@@ -40,10 +40,9 @@ def plan_cut(
         return max(t, 0.0)
 
     def end_at(w: int) -> float:
-        t = words[w].end + config.END_PAD_SECONDS
-        if w + 1 < len(words):  # don't run into the next word
-            t = min(t, max(words[w + 1].start, words[w].end))
-        return min(t, media_end)
+        # A full tail even if someone speaks again inside it: the render fades the audio
+        # out over the tail, so a following word trails off instead of the clip stopping dead.
+        return min(words[w].end + config.END_PAD_SECONDS, media_end)
 
     # Never open on a filler or conjunction.
     while s < e and _opens_on_filler(sentences[s], words):

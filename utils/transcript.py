@@ -62,14 +62,18 @@ def has_diarization(words: list["Word"]) -> bool:
 
 
 def load_or_transcribe(
-    video: Path, wav: Path, audio_hash: str, duration: float, silences: list[Silence]
+    video: Path, wav: Path, audio_hash: str, duration: float, silences: list[Silence],
+    allow_transcribe: bool = True,
 ) -> tuple[list[Word], Path]:
-    """Return the word list and the cache file it lives in. Scribe only runs on a cache miss."""
+    """Return the word list and the cache file it lives in. Scribe only runs on a cache miss,
+    and only if allow_transcribe; otherwise a miss raises."""
     key = cache_key(audio_hash)
     cached = next(iter(sorted(config.TRANSCRIPTS_DIR.glob(f"*.{key}.json"))), None)
     if cached:
         log.info("Transcript cache hit: %s", cached.name)
         data = json.loads(cached.read_text(encoding="utf-8"))
+    elif not allow_transcribe:
+        raise RuntimeError(f"No transcript for {video.name}; run `python main.py transcribe` first")
     else:
         cached = config.TRANSCRIPTS_DIR / f"{video.stem}.{key}.json"
         data = _transcribe(video, wav, audio_hash, duration, silences)

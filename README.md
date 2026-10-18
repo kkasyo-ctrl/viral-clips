@@ -4,7 +4,7 @@ A repo that extracts viral moments from long videos
 ## Pipeline
 
 1. **Audio**: ffmpeg pulls a 16 kHz mono WAV and runs `silencedetect` in the same pass.
-2. **Transcription**: ElevenLabs Scribe v1 (diarized, word timestamps). Cached in `Data/Transcripts/` on a hash of the audio plus the diarization setting, so it never runs twice for the same audio and a transcript taken without speaker IDs is never reused by the reframing step. Audio past Scribe's request limit is split at ~30-minute marks snapped to silence.
+2. **Transcription**: ElevenLabs Scribe v2 (diarized, word timestamps). Cached in `Data/Transcripts/` on a hash of the audio plus the diarization setting, so it never runs twice for the same audio and a transcript taken without speaker IDs is never reused by the reframing step. Audio past Scribe's request limit is split at ~30-minute marks snapped to silence.
 3. **Moments**: `gpt-6-luna` reads the sentence-level transcript and returns sentence ranges with a title and reason.
 4. **Virality**: Jev scores each clip with four calibrated yes/no probabilities: `p_viral`, `p_self_contained`, `p_has_payoff`, `p_opens_cold`.
 5. **Threshold**: keep clips with `p_viral >= PROB_THRESHOLD` (default 0.6), optionally capped with `--top-n`.
@@ -25,16 +25,28 @@ copy .env.example .env              # then add the three API keys
 
 Put videos in `Data/Input_video/`, then:
 
+Each stage runs on its own and reads what the previous one saved, so you only pay for the API calls you ask for:
+
 ```
-python main.py                             # every video in Data/Input_video
-python main.py episode.mp4 --top-n 10      # one video, at most 10 clips
-python main.py --threshold 0 --no-render   # score everything, render nothing (for tuning)
-python main.py episode.mp4 --no-reframe    # keep the source aspect ratio
+python main.py transcribe [videos]   # ElevenLabs -> Data/Transcripts/ (cached: never runs twice)
+python main.py find [videos]         # GPT picks moments -> moments.json (overwrites it, unscored)
+python main.py score [videos]        # Jev scores the moments in moments.json
+python main.py render [videos]       # cut, caption, reframe, encode -- no API calls
+python main.py run [videos]          # all four in order; `python main.py` alone does the same
 ```
 
-Output for each video goes to `Data/clips/<video name>/`: `NN_title.mp4` (vertical, captions burned in), `.srt` and `.ass` files, plus `moments.json` with every candidate, its scores, whether it was kept, and for each rendered clip the crop segments it was reframed with (times, speaker, x/y, and whether a fallback crop was used). Re-running reuses those crops instead of redoing the face analysis; delete `moments.json` to force a fresh pass.
+With no videos named, each command works on everything in `Data/Input_video/`. `find`, `score` and `render` need the transcript and refuse to call ElevenLabs; `score` and `render` need `moments.json`. You can edit `moments.json` by hand between stages (delete moments, change a `sentences` range) and the later stages follow it. `render` with nothing scored renders every moment.
 
-**Tuning the threshold**: run a few videos you know well with `--threshold 0 --no-render`. The ranked table shows where your own judgment cuts the list; set `PROB_THRESHOLD` in `.env` to that value.
+```
+python main.py render episode.mp4 --top-n 10   # one video, at most 10 clips
+python main.py render --threshold 0.3          # override PROB_THRESHOLD
+python main.py render --no-reframe             # keep the source aspect ratio
+python main.py run --no-render                 # stop after scoring
+```
+
+Output for each video goes to `Data/clips/<video name>/`: `NN_title.mp4` (vertical, captions burned in), `.srt` and `.ass` files, plus `moments.json` with every candidate, its scores, whether it was kept, and for each rendered clip the crop segments it was reframed with (times, speaker, x/y, and whether a fallback crop was used). Re-rendering reuses those crops instead of redoing the face analysis; `find` replaces `moments.json`, so it starts fresh.
+
+**Tuning the threshold**: run `score` on a few videos you know well. The ranked table shows where your own judgment cuts the list; set `PROB_THRESHOLD` in `.env` to that value.
 
 **Reframing settings** live in `config.py` under step 9 and can be overridden in `.env`: `REFRAME` (on/off), `REFRAME_ASPECT_RATIO`, `REFRAME_WIDTH` / `REFRAME_HEIGHT`, `REFRAME_MIN_SEGMENT_SECONDS`, `REFRAME_SAMPLES_PER_SEGMENT`, `REFRAME_SCENE_THRESHOLD`, `REFRAME_SCENE_MERGE_THRESHOLD` and `REFRAME_DEVICE`. Frame sampling is seeded, so re-running a clip gives the same crops.
 

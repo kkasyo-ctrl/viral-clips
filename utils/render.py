@@ -86,6 +86,33 @@ def crop_eval_option() -> str:
     return ":eval=frame"
 
 
+@functools.cache
+def video_encoder() -> str:
+    """The H.264 encoder to use: RENDER_ENCODER if set, else NVIDIA's NVENC when it
+    actually works here, else libx264 on the CPU.
+
+    ffmpeg lists h264_nvenc on builds that have it whether or not there is an NVIDIA GPU
+    and driver, so the check is a one-frame test encode rather than the encoder list.
+    """
+    if config.RENDER_ENCODER != "auto":
+        return config.RENDER_ENCODER
+    proc = subprocess.run(
+        [config.FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=black:s=256x256",
+         "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    encoder = "h264_nvenc" if proc.returncode == 0 else "libx264"
+    log.info("Video encoder: %s", encoder)
+    return encoder
+
+
+def video_codec_args() -> list[str]:
+    if video_encoder() == "h264_nvenc":
+        # Constant-quality VBR, NVENC's nearest thing to CRF; p6 is its slow, high-quality preset.
+        return ["-c:v", "h264_nvenc", "-preset", "p6", "-rc", "vbr", "-cq", str(config.RENDER_CRF + 2), "-b:v", "0"]
+    return ["-c:v", "libx264", "-preset", config.RENDER_PRESET, "-crf", str(config.RENDER_CRF)]
+
+
 def render_clip(
     video: Path,
     start: float,
@@ -93,6 +120,7 @@ def render_clip(
     ass_file: Path,
     out_file: Path,
     video_filter: str = "",
+    fade_out: float = 0.0,
 ) -> None:
     """Encode one clip. `video_filter` runs before the captions, which always go last.
 
@@ -108,7 +136,8 @@ def render_clip(
         "-ss", f"{start:.3f}", "-i", str(video.resolve()), "-t", f"{end - start:.3f}",
         "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", chain,
-        "-c:v", "libx264", "-preset", config.RENDER_PRESET, "-crf", str(config.RENDER_CRF),
+        *(["-af", f"afade=t=out:st={end - start - fade_out:.3f}:d={fade_out:.3f}"] if fade_out > 0.05 else []),
+        *video_codec_args(),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", config.RENDER_AUDIO_BITRATE,
         "-movflags", "+faststart",

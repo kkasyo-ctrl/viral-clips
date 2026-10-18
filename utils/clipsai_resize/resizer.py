@@ -543,7 +543,11 @@ class Resizer:
 
         # resize the frames
         logging.debug("Detecting faces in {} frames.".format(len(frames)))
-        downsample_factor = max(frames[0].shape[1] / face_detect_width, 1)
+        # Never upscale: a source narrower than face_detect_width is detected as it is.
+        # (Upstream resized it up to face_detect_width anyway but kept a factor of 1, so on
+        # a small source every box came back stretched sideways and the crop missed the face.)
+        face_detect_width = min(face_detect_width, frames[0].shape[1])
+        downsample_factor = frames[0].shape[1] / face_detect_width
         detect_height = int(frames[0].shape[0] / downsample_factor)
         resized_frames = []
         for frame in frames:
@@ -889,7 +893,13 @@ class Resizer:
             # sum all roi's, average after loop
             roi += Rect(x1, y1, x2 - x1, y2 - y1)
             frame = frames[bounding_box_data["frame"]]
-            face = frame[y1:y2, x1:x2, :]
+            # MTCNN can return a box reaching past the frame edge (negative or too-large
+            # coords). Clamp it, and skip a face with nothing left: mediapipe aborts on an
+            # empty image rather than returning no landmarks.
+            h, w = frame.shape[:2]
+            face = frame[max(y1, 0):min(y2, h), max(x1, 0):min(x2, w), :]
+            if face.shape[0] == 0 or face.shape[1] == 0:
+                continue
 
             # mouth movement
             mar = self._calc_mouth_aspect_ratio(face)
