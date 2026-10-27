@@ -59,17 +59,36 @@ AUDIO_SAMPLE_RATE = 16_000
 SILENCE_NOISE_DB = _float("SILENCE_NOISE_DB", -30.0)
 SILENCE_MIN_SECONDS = 0.3
 
-# 2. Transcription (ElevenLabs Scribe)
-SCRIBE_MODEL = os.getenv("SCRIBE_MODEL", "scribe_v2")
+# 2. Transcription (OpenRouter by default, ElevenLabs Scribe still selectable)
+TRANSCRIBE_PROVIDER = os.getenv("TRANSCRIBE_PROVIDER", "openrouter").strip().lower()
+if TRANSCRIBE_PROVIDER not in {"openrouter", "elevenlabs"}:
+    raise SystemExit(f"TRANSCRIBE_PROVIDER must be 'openrouter' or 'elevenlabs', not {TRANSCRIBE_PROVIDER!r}")
+_OPENROUTER = TRANSCRIBE_PROVIDER == "openrouter"
+
+TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL") or (
+    "microsoft/mai-transcribe-2" if _OPENROUTER else "scribe_v2"
+)
 # Reframing needs per-word speaker IDs, so diarization is on. It is part of the
 # transcript cache key: an older transcript taken without it has no speakers to read.
-SCRIBE_DIARIZE = _bool("SCRIBE_DIARIZE", True)
-SCRIBE_LANGUAGE = os.getenv("SCRIBE_LANGUAGE") or None  # None = auto-detect
-# Scribe accepts up to 3 GB / 10 h per request; stay a little under that.
-SCRIBE_MAX_BYTES = _int("SCRIBE_MAX_BYTES", 2_800_000_000)
-SCRIBE_MAX_SECONDS = _float("SCRIBE_MAX_SECONDS", 9.5 * 3600)
-SCRIBE_CHUNK_SECONDS = 30 * 60
-SCRIBE_SPLIT_SEARCH_SECONDS = 90  # how far either side of a 30-min mark to look for a silence
+TRANSCRIBE_DIARIZE = _bool("TRANSCRIBE_DIARIZE", True)
+TRANSCRIBE_LANGUAGE = os.getenv("TRANSCRIBE_LANGUAGE") or None  # None = auto-detect
+
+# How much audio goes up in one request. Scribe takes the lot (3 GB / 10 h), so it is
+# only chunked for very long videos. OpenRouter caps a request at 25 MB, so it gets short
+# chunks: the pipeline's 16 kHz mono WAV runs ~1.9 MB/minute, which puts an 8-minute chunk
+# at ~15 MB and the longest plan_chunks will stretch to (1.25x) at ~19 MB. The audio is
+# uploaded as WAV because mai-transcribe-2 rejects FLAC upstream.
+OPENROUTER_MAX_REQUEST_BYTES = _int("OPENROUTER_MAX_REQUEST_BYTES", 25_000_000)
+# Which upstream slug carries the diarization option (mai-transcribe-2 routes via Azure).
+OPENROUTER_PROVIDER_SLUG = os.getenv("OPENROUTER_PROVIDER_SLUG", "azure")
+
+TRANSCRIBE_CHUNK_SECONDS = _float("TRANSCRIBE_CHUNK_SECONDS", 8 * 60 if _OPENROUTER else 30 * 60)
+TRANSCRIBE_MAX_SECONDS = _float("TRANSCRIBE_MAX_SECONDS", TRANSCRIBE_CHUNK_SECONDS if _OPENROUTER else 9.5 * 3600)
+TRANSCRIBE_MAX_BYTES = _int(
+    "TRANSCRIBE_MAX_BYTES",
+    int(TRANSCRIBE_MAX_SECONDS * AUDIO_SAMPLE_RATE * 2) if _OPENROUTER else 2_800_000_000,
+)
+TRANSCRIBE_SPLIT_SEARCH_SECONDS = 90  # how far either side of a chunk mark to look for a silence
 
 # 3. Moment extraction (OpenAI)
 MOMENTS_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
@@ -120,6 +139,11 @@ REFRAME_SCENE_MERGE_THRESHOLD = _float("REFRAME_SCENE_MERGE_THRESHOLD", 0.25)
 REFRAME_DEVICE = os.getenv("REFRAME_DEVICE") or None  # None = auto (cuda, mps, else cpu)
 REFRAME_SEED = _int("REFRAME_SEED", 0)  # frame sampling is random; fix it so re-runs match
 REFRAME_FACE_DETECT_WIDTH = _int("REFRAME_FACE_DETECT_WIDTH", 960)
+# Within a shot the crop follows the face: sampled this often, held while the face stays
+# within the dead zone (a fraction of the crop width) of centre, else panned over PAN seconds.
+REFRAME_TRACK_INTERVAL = _float("REFRAME_TRACK_INTERVAL", 0.25)
+REFRAME_TRACK_DEADZONE = _float("REFRAME_TRACK_DEADZONE", 0.10)
+REFRAME_PAN_SECONDS = _float("REFRAME_PAN_SECONDS", 0.4)
 
 
 # 9. Render

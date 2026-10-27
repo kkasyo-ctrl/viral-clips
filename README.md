@@ -4,7 +4,7 @@ A repo that extracts viral moments from long videos
 ## Pipeline
 
 1. **Audio**: ffmpeg pulls a 16 kHz mono WAV and runs `silencedetect` in the same pass.
-2. **Transcription**: ElevenLabs Scribe v2 (diarized, word timestamps). Cached in `Data/Transcripts/` on a hash of the audio plus the diarization setting, so it never runs twice for the same audio and a transcript taken without speaker IDs is never reused by the reframing step. Audio past Scribe's request limit is split at ~30-minute marks snapped to silence.
+2. **Transcription**: `microsoft/mai-transcribe-2` through OpenRouter (diarized, word timestamps), billed per hour of audio. Cached in `Data/Transcripts/` on a hash of the audio plus the diarization setting, provider and model, so it never runs twice for the same audio and a transcript taken without speaker IDs -- or from a different model -- is never reused by the reframing step. Audio past the provider's request limit is split at chunk marks snapped to silence: ~10 minutes for OpenRouter, which caps a request at 25 MB, and ~30 for Scribe. Set `TRANSCRIBE_PROVIDER=elevenlabs` in `.env` to go back to Scribe direct.
 3. **Moments**: `gpt-6-luna` reads the sentence-level transcript and returns sentence ranges with a title and reason.
 4. **Virality**: Jev scores each clip with four calibrated yes/no probabilities: `p_viral`, `p_self_contained`, `p_has_payoff`, `p_opens_cold`.
 5. **Threshold**: keep clips with `p_viral >= PROB_THRESHOLD` (default 0.6), optionally capped with `--top-n`.
@@ -28,14 +28,14 @@ Put videos in `Data/Input_video/`, then:
 Each stage runs on its own and reads what the previous one saved, so you only pay for the API calls you ask for:
 
 ```
-python main.py transcribe [videos]   # ElevenLabs -> Data/Transcripts/ (cached: never runs twice)
+python main.py transcribe [videos]   # OpenRouter -> Data/Transcripts/ (cached: never runs twice)
 python main.py find [videos]         # GPT picks moments -> moments.json (overwrites it, unscored)
 python main.py score [videos]        # Jev scores the moments in moments.json
 python main.py render [videos]       # cut, caption, reframe, encode -- no API calls
 python main.py run [videos]          # all four in order; `python main.py` alone does the same
 ```
 
-With no videos named, each command works on everything in `Data/Input_video/`. `find`, `score` and `render` need the transcript and refuse to call ElevenLabs; `score` and `render` need `moments.json`. You can edit `moments.json` by hand between stages (delete moments, change a `sentences` range) and the later stages follow it. `render` with nothing scored renders every moment.
+With no videos named, each command works on everything in `Data/Input_video/`. `find`, `score` and `render` need the transcript and refuse to call the transcription API; `score` and `render` need `moments.json`. You can edit `moments.json` by hand between stages (delete moments, change a `sentences` range) and the later stages follow it. `render` with nothing scored renders every moment.
 
 ```
 python main.py render episode.mp4 --top-n 10   # one video, at most 10 clips

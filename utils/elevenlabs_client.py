@@ -23,14 +23,14 @@ def transcribe(audio_path: Path, attempts: int = 4) -> dict:
         raise RuntimeError("ELEVENLABS_API_KEY is not set (add it to .env)")
 
     form = {
-        "model_id": config.SCRIBE_MODEL,
+        "model_id": config.TRANSCRIBE_MODEL,
         # Per-word speaker IDs; the reframing step groups them into speaker turns.
-        "diarize": "true" if config.SCRIBE_DIARIZE else "false",
+        "diarize": "true" if config.TRANSCRIBE_DIARIZE else "false",
         "timestamps_granularity": "word",
         "tag_audio_events": "true",
     }
-    if config.SCRIBE_LANGUAGE:
-        form["language_code"] = config.SCRIBE_LANGUAGE
+    if config.TRANSCRIBE_LANGUAGE:
+        form["language_code"] = config.TRANSCRIBE_LANGUAGE
 
     for attempt in range(1, attempts + 1):
         try:

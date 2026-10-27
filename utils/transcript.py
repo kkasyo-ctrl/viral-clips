@@ -1,4 +1,4 @@
-"""Step 2: Scribe transcription normalised into words and sentences, cached on a hash of the audio."""
+"""Step 2: transcription normalised into words and sentences, cached on a hash of the audio."""
 import hashlib
 import json
 import logging
@@ -7,13 +7,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
-from utils import audio, elevenlabs_client
+from utils import audio, elevenlabs_client, openrouter_client
 from utils.audio import Silence
 
 log = logging.getLogger(__name__)
 
-# What normalize_words falls back to when Scribe returns no speaker_id for a word.
+# What normalize_words falls back to when the provider returns no speaker_id for a word.
 NO_SPEAKER = "speaker"
+
+_CLIENTS = {"openrouter": openrouter_client, "elevenlabs": elevenlabs_client}
 
 _TERMINAL = (".", "?", "!", "…")
 _CLOSERS = "\"'”’)]}»"
@@ -46,18 +48,23 @@ def format_timestamp(seconds: float) -> str:
 
 def cache_key(audio_hash: str) -> str:
     """Cache key for one transcript: the audio hash plus the settings that change what
-    Scribe sends back.
+    the provider sends back.
 
     Diarization is in the key because reframing reads the per-word speaker IDs, and a
     transcript taken without it has none to read. Keying on the audio alone would hand
-    those older, speaker-less transcripts straight back.
+    those older, speaker-less transcripts straight back. Provider and model join it for
+    the same reason: two models disagree on wording and timings, so their transcripts
+    are not interchangeable. Scribe keeps the original key shape, which is what every
+    transcript cached before the move to OpenRouter was written under.
     """
-    settings = f"diarize={int(config.SCRIBE_DIARIZE)}"
+    settings = f"diarize={int(config.TRANSCRIBE_DIARIZE)}"
+    if (config.TRANSCRIBE_PROVIDER, config.TRANSCRIBE_MODEL) != ("elevenlabs", "scribe_v2"):
+        settings += f"|provider={config.TRANSCRIBE_PROVIDER}|model={config.TRANSCRIBE_MODEL}"
     return hashlib.sha256(f"{audio_hash}|{settings}".encode()).hexdigest()[:16]
 
 
 def has_diarization(words: list["Word"]) -> bool:
-    """Whether Scribe labelled who was speaking, rather than falling back to one voice."""
+    """Whether the provider labelled who was speaking, rather than falling back to one voice."""
     return any(not word.speaker.endswith(NO_SPEAKER) for word in words)
 
 
@@ -65,8 +72,8 @@ def load_or_transcribe(
     video: Path, wav: Path, audio_hash: str, duration: float, silences: list[Silence],
     allow_transcribe: bool = True,
 ) -> tuple[list[Word], Path]:
-    """Return the word list and the cache file it lives in. Scribe only runs on a cache miss,
-    and only if allow_transcribe; otherwise a miss raises."""
+    """Return the word list and the cache file it lives in. The provider only runs on a cache
+    miss, and only if allow_transcribe; otherwise a miss raises."""
     key = cache_key(audio_hash)
     cached = next(iter(sorted(config.TRANSCRIPTS_DIR.glob(f"*.{key}.json"))), None)
     if cached:
@@ -92,6 +99,7 @@ def load_or_transcribe(
 
 
 def _transcribe(video: Path, wav: Path, audio_hash: str, duration: float, silences: list[Silence]) -> dict:
+    client = _CLIENTS[config.TRANSCRIBE_PROVIDER]
     spans = plan_chunks(duration, wav.stat().st_size, silences)
     chunks = []
     for i, (start, end) in enumerate(spans):
@@ -101,16 +109,17 @@ def _transcribe(video: Path, wav: Path, audio_hash: str, duration: float, silenc
             audio.slice_wav(wav, start, end, path)
         log.info(
             "Transcribing %s-%s with %s (%d/%d)",
-            format_timestamp(start), format_timestamp(end), config.SCRIBE_MODEL, i + 1, len(spans),
+            format_timestamp(start), format_timestamp(end), config.TRANSCRIBE_MODEL, i + 1, len(spans),
         )
-        chunks.append({"start": start, "end": end, "response": elevenlabs_client.transcribe(path)})
+        chunks.append({"start": start, "end": end, "response": client.transcribe(path)})
         if path != wav:
             path.unlink()
     return {
         "audio_sha256": audio_hash,
         "source": video.name,
-        "model": config.SCRIBE_MODEL,
-        "diarize": config.SCRIBE_DIARIZE,
+        "provider": config.TRANSCRIBE_PROVIDER,
+        "model": config.TRANSCRIBE_MODEL,
+        "diarize": config.TRANSCRIBE_DIARIZE,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "duration": duration,
         "chunks": chunks,
@@ -118,15 +127,16 @@ def _transcribe(video: Path, wav: Path, audio_hash: str, duration: float, silenc
 
 
 def plan_chunks(duration: float, size_bytes: int, silences: list[Silence]) -> list[tuple[float, float]]:
-    """One span if Scribe takes the whole file, else ~30-minute spans split in the middle of silences."""
-    if duration <= config.SCRIBE_MAX_SECONDS and size_bytes <= config.SCRIBE_MAX_BYTES:
+    """One span if the provider takes the whole file, else chunk-sized spans split in the middle
+    of silences."""
+    if duration <= config.TRANSCRIBE_MAX_SECONDS and size_bytes <= config.TRANSCRIBE_MAX_BYTES:
         return [(0.0, duration)]
     cuts = [0.0]
-    while duration - cuts[-1] > config.SCRIBE_CHUNK_SECONDS * 1.25:
-        mark = cuts[-1] + config.SCRIBE_CHUNK_SECONDS
+    while duration - cuts[-1] > config.TRANSCRIBE_CHUNK_SECONDS * 1.25:
+        mark = cuts[-1] + config.TRANSCRIBE_CHUNK_SECONDS
         nearby = [
             s for s in silences
-            if s.start > cuts[-1] and abs((s.start + s.end) / 2 - mark) <= config.SCRIBE_SPLIT_SEARCH_SECONDS
+            if s.start > cuts[-1] and abs((s.start + s.end) / 2 - mark) <= config.TRANSCRIBE_SPLIT_SEARCH_SECONDS
         ]
         if nearby:
             longest = max(nearby, key=lambda s: s.duration)
@@ -139,7 +149,8 @@ def plan_chunks(duration: float, size_bytes: int, silences: list[Silence]) -> li
 
 
 def normalize_words(response: dict, offset: float = 0.0, speaker_prefix: str = "") -> list[Word]:
-    """Keep spoken words only (Scribe also returns spacing and audio-event entries), in absolute time."""
+    """Keep spoken words only (Scribe also returns spacing and audio-event entries), in absolute
+    time. openrouter_client hands its words over in this same shape."""
     words = []
     for item in response.get("words", []):
         text = (item.get("text") or "").strip()
