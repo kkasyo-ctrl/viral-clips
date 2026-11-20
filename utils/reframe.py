@@ -47,10 +47,28 @@ class CropSegment:
     x: int  # top-left corner of the crop in the source frame
     y: int
     fallback: bool  # True if no face was found and a held or centred crop was used
+    # Keyframes (clip time, x) for a crop that follows the face within the segment; x is
+    # interpolated between them and held after the last. Empty: x is fixed for the segment.
+    track: list[tuple[float, int]] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+
+# Bumped when planning changes enough that recorded plans should be redone.
+# 2: the crop follows the face within a shot.
+# 3: sampled twice as often, and pans lead the move instead of trailing it.
+PLAN_VERSION = 3
+
+
+def tracking_settings() -> dict:
+    """The settings a recorded plan was tracked with; change one and the plan is redone."""
+    return {
+        "interval": config.REFRAME_TRACK_INTERVAL,
+        "dead_zone": config.REFRAME_TRACK_DEADZONE,
+        "pan_seconds": config.REFRAME_PAN_SECONDS,
+    }
 
 
 @dataclass(frozen=True)
@@ -79,9 +97,12 @@ class CropPlan:
                     "x": s.x,
                     "y": s.y,
                     "fallback": s.fallback,
+                    **({"track": [[round(t, 3), x] for t, x in s.track]} if s.track else {}),
                 }
                 for s in self.segments
             ],
+            "version": PLAN_VERSION,
+            "tracking": tracking_settings(),
         }
 
     @classmethod
@@ -101,6 +122,7 @@ class CropPlan:
                     x=int(s["x"]),
                     y=int(s["y"]),
                     fallback=bool(s["fallback"]),
+                    track=[(float(t), int(x)) for t, x in s.get("track", [])],
                 )
                 for s in data["segments"]
             ],
@@ -256,6 +278,12 @@ def _reusable(recorded: dict | None, cut: Cut, info: VideoInfo) -> CropPlan | No
     """A recorded plan, if it was made for this clip at these dimensions."""
     if not recorded:
         return None
+    if recorded.get("version", 1) != PLAN_VERSION:
+        log.info("Recorded crop plan is from an older planner; planning again")
+        return None
+    if recorded.get("tracking") != tracking_settings():
+        log.info("Recorded crop plan used other tracking settings; planning again")
+        return None
     try:
         existing = CropPlan.from_dict(recorded)
     except (KeyError, TypeError, ValueError):
@@ -337,14 +365,16 @@ def plan_crops(
             face_detect_width=config.REFRAME_FACE_DETECT_WIDTH,
             scene_merge_threshold=config.REFRAME_SCENE_MERGE_THRESHOLD,
         )
+        planned = to_crop_segments(crops.segments, cut, width, height, info)
+        planned = track_faces(resizer, source, cut, planned, width, height, info)
     finally:
         resizer.cleanup()
 
-    planned = to_crop_segments(crops.segments, cut, width, height, info)
     fallbacks = sum(s.fallback for s in planned)
     log.info(
-        "Reframing: %d crop segment(s)%s",
+        "Reframing: %d crop segment(s), %d pan(s)%s",
         len(planned),
+        sum(max(len(s.track) - 1, 0) // 2 for s in planned),
         f", {fallbacks} without a face" if fallbacks else "",
     )
     return CropPlan(info.width, info.height, width, height, out_width, out_height, planned)
@@ -380,6 +410,75 @@ def to_crop_segments(
     return fill_gaps(out, round(cut.duration, 3))
 
 
+def track_faces(
+    resizer, source, cut: Cut, segments: list[CropSegment],
+    crop_width: int, crop_height: int, info: VideoInfo,
+) -> list[CropSegment]:
+    """Make each segment's crop follow the face the Resizer chose for it.
+
+    The Resizer gives a segment one crop, centred on that face's average position over a
+    handful of frames. Across a long shot people lean and shift and cameras drift, so the
+    face walks out of a fixed crop. Here the face nearest the crop is followed through
+    frames sampled every REFRAME_TRACK_INTERVAL: the crop opens on where the face is,
+    holds still while it stays inside the dead zone, and pans to re-centre when it leaves,
+    timed to arrive with the face rather than set off after it.
+    """
+    import numpy as np
+
+    from utils.clipsai_resize import extract_frames
+
+    interval = config.REFRAME_TRACK_INTERVAL
+    samples: list[tuple[int, float]] = []  # (segment index, clip time)
+    for i, s in enumerate(segments):
+        if s.fallback or s.duration <= 0:
+            continue
+        n = max(1, int(s.duration / interval))
+        samples += [(i, s.start + (k + 0.5) * s.duration / n) for k in range(n)]
+    if not samples:
+        return segments
+
+    detections = []
+    for b in range(0, len(samples), 64):
+        times = [min(cut.start + t, info.duration - 0.05) for _, t in samples[b : b + 64]]
+        detections += resizer._detect_faces(extract_frames(source, times), config.REFRAME_FACE_DETECT_WIDTH)
+
+    dead_zone = config.REFRAME_TRACK_DEADZONE * crop_width
+    out = [replace(s) for s in segments]
+    for i, s in enumerate(out):
+        mine = [(t, d) for (j, t), d in zip(samples, detections) if j == i]
+        if not mine:
+            continue
+        # Follow the face nearest where the crop is looking; a face further off than a
+        # crop width is someone else, so the crop stays put rather than jump to them.
+        center = s.x + crop_width / 2
+        centers = []
+        for _, boxes in mine:
+            if boxes is not None and len(boxes):
+                xs = (boxes[:, 0].astype(float) + boxes[:, 2]) / 2
+                nearest = xs[np.argmin(np.abs(xs - center))]
+                if abs(nearest - center) < crop_width:
+                    center = float(nearest)
+            centers.append(center)
+        # A median of three drops one-frame detection blips.
+        smooth = [float(np.median(centers[max(0, k - 1) : k + 2])) for k in range(len(centers))]
+
+        def x_for(c: float) -> int:
+            return clamp_crop(c - crop_width / 2, s.y, crop_width, crop_height, info.width, info.height)[0]
+
+        camera = smooth[0]
+        keys = [(s.start, x_for(camera))]
+        for (t, _), c in zip(mine[1:], smooth[1:]):
+            if abs(c - camera) > dead_zone:
+                # The whole clip is known in advance, so lead the move: the pan ends where
+                # the face arrives instead of starting there, and the camera doesn't trail.
+                pan_start = max(t - config.REFRAME_PAN_SECONDS, keys[-1][0])
+                keys += [(pan_start, x_for(camera)), (t, x_for(c))]
+                camera = c
+        s.x = keys[0][1]
+        s.track = keys if len(keys) > 1 else []
+    return out
+
+
 # --- the ffmpeg side ----------------------------------------------------------------
 
 def crop_filter(plan: CropPlan, eval_option: str | None = None) -> str:
@@ -392,7 +491,10 @@ def crop_filter(plan: CropPlan, eval_option: str | None = None) -> str:
     chain = []
     if (plan.crop_width, plan.crop_height) != (plan.source_width, plan.source_height):
         ends = [s.end for s in plan.segments]
-        x = _steps(ends, [s.x for s in plan.segments])
+        if any(s.track for s in plan.segments):
+            x = _tracked(plan.segments)
+        else:
+            x = _steps(ends, [s.x for s in plan.segments])
         y = _steps(ends, [s.y for s in plan.segments])
         where = f"x={_quote(x)}:y={_quote(y)}"
         if "(" in x or "(" in y:  # the crop moves, so ffmpeg has to re-read it per frame
@@ -410,6 +512,27 @@ def _steps(ends: list[float], values: list[int]) -> str:
     expression = str(values[-1])
     for end, value in zip(reversed(ends[:-1]), reversed(values[:-1])):
         expression = f"if(lt(t,{end:.3f}),{value},{expression})"
+    return expression
+
+
+def _tracked(segments: list[CropSegment]) -> str:
+    """An ffmpeg expression for x across segments whose crops move: linear between each
+    segment's keyframes, held after the last, and a hard cut between segments."""
+    pieces: list[tuple[float, str]] = []  # (until, value), in order
+    for s in segments:
+        keys = [k for k in (s.track or [(s.start, s.x)]) if k[0] < s.end] or [(s.start, s.x)]
+        keys.append((s.end, keys[-1][1]))
+        for (ta, xa), (tb, xb) in zip(keys, keys[1:]):
+            if tb - ta <= 1e-3:
+                continue
+            value = str(xa) if xa == xb else f"{xa}+({xb - xa})*(t-{ta:.3f})/{tb - ta:.3f}"
+            if pieces and pieces[-1][1] == value:
+                pieces[-1] = (tb, value)  # a hold carrying on: extend it
+            else:
+                pieces.append((tb, value))
+    expression = pieces[-1][1]
+    for until, value in reversed(pieces[:-1]):
+        expression = f"if(lt(t,{until:.3f}),{value},{expression})"
     return expression
 
 
