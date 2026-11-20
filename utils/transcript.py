@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,10 +71,11 @@ def has_diarization(words: list["Word"]) -> bool:
 
 def load_or_transcribe(
     video: Path, wav: Path, audio_hash: str, duration: float, silences: list[Silence],
-    allow_transcribe: bool = True,
+    allow_transcribe: bool = True, progress: Callable[[float, str], None] | None = None,
 ) -> tuple[list[Word], Path]:
     """Return the word list and the cache file it lives in. The provider only runs on a cache
-    miss, and only if allow_transcribe; otherwise a miss raises."""
+    miss, and only if allow_transcribe; otherwise a miss raises. `progress(fraction, message)`
+    is called before each chunk goes up."""
     key = cache_key(audio_hash)
     cached = next(iter(sorted(config.TRANSCRIPTS_DIR.glob(f"*.{key}.json"))), None)
     if cached:
@@ -83,7 +85,7 @@ def load_or_transcribe(
         raise RuntimeError(f"No transcript for {video.name}; run `python main.py transcribe` first")
     else:
         cached = config.TRANSCRIPTS_DIR / f"{video.stem}.{key}.json"
-        data = _transcribe(video, wav, audio_hash, duration, silences)
+        data = _transcribe(video, wav, audio_hash, duration, silences, progress)
         config.TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
         partial = cached.with_name(cached.name + ".tmp")
         partial.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -98,7 +100,10 @@ def load_or_transcribe(
     return words, cached
 
 
-def _transcribe(video: Path, wav: Path, audio_hash: str, duration: float, silences: list[Silence]) -> dict:
+def _transcribe(
+    video: Path, wav: Path, audio_hash: str, duration: float, silences: list[Silence],
+    progress: Callable[[float, str], None] | None = None,
+) -> dict:
     client = _CLIENTS[config.TRANSCRIBE_PROVIDER]
     spans = plan_chunks(duration, wav.stat().st_size, silences)
     chunks = []
@@ -111,6 +116,8 @@ def _transcribe(video: Path, wav: Path, audio_hash: str, duration: float, silenc
             "Transcribing %s-%s with %s (%d/%d)",
             format_timestamp(start), format_timestamp(end), config.TRANSCRIBE_MODEL, i + 1, len(spans),
         )
+        if progress:
+            progress(i / len(spans), f"Transcribing part {i + 1} of {len(spans)}")
         chunks.append({"start": start, "end": end, "response": client.transcribe(path)})
         if path != wav:
             path.unlink()

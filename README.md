@@ -21,6 +21,12 @@ pip install -r requirements.txt
 copy .env.example .env              # then add the three API keys
 ```
 
+## Web page
+
+Double-click `start.bat`. It installs Flask the first time, starts a local server and opens http://127.0.0.1:8000 in your browser (set `WEB_PORT` in `.env` to use another port). Close the console window to stop it.
+
+Upload a video, set the threshold, the maximum number of clips and whether to reframe to vertical, then press **Upload & process**. The page shows the upload, then a progress bar through transcription, moment finding, scoring and rendering (per transcription chunk and per clip). When it finishes, each clip has a preview player and a download button. The upload is saved to `Data/Input_video/`. Uploading the same video again reuses that file and its cached transcript. A different video with the same name is saved as `name (2).mp4`. One video is processed at a time, with the same stages as `python main.py run`.
+
 ## Usage
 
 Put videos in `Data/Input_video/`, then:

@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viral Clips</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --ink: #1b1b1f; --muted: #6b6b75; --line: #e3e3e0;
+    --accent: #e8443a; --accent-ink: #ffffff; --ok: #1f9d55; --err: #c62828; --track: #ececea;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121214; --panel: #1b1b1f; --ink: #ececf0; --muted: #9a9aa6; --line: #2c2c33;
+      --accent: #ff5a4e; --accent-ink: #ffffff; --ok: #3ccf7e; --err: #ff6b6b; --track: #2a2a30;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 16px 64px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  .mark { width: 36px; height: 36px; border-radius: 10px; background: var(--accent); display: grid; place-items: center; color: var(--accent-ink); font-weight: 700; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  h2 { font-size: 15px; margin: 0 0 14px; font-weight: 600; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 20px; box-shadow: var(--shadow); }
+  .hidden { display: none !important; }
+
+  .drop { display: flex; flex-direction: column; align-items: center; gap: 4px; border: 2px dashed var(--line); border-radius: 12px; padding: 32px 16px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .drop .icon { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 8px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+  .drop strong { display: block; font-size: 16px; }
+  .drop span { display: block; color: var(--muted); font-size: 13px; }
+  .drop.has-file strong { color: var(--accent); word-break: break-all; }
+
+  .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 18px 0; }
+  .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .field small { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .range { display: flex; align-items: center; gap: 10px; }
+  .range input[type=range] { flex: 1; accent-color: var(--accent); }
+  .range output { font-variant-numeric: tabular-nums; min-width: 2.6em; text-align: right; font-weight: 600; }
+  input[type=number] { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); font: inherit; }
+  .field .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 8px 0 0; margin: 0; font-weight: 400; font-size: 14px; }
+  .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+
+  button, .btn { appearance: none; border: 0; border-radius: 9px; padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer; background: var(--accent); color: var(--accent-ink); text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+
+  .job-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .job-head .name { font-weight: 600; word-break: break-all; }
+  .job-head .elapsed { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .bar { height: 12px; background: var(--track); border-radius: 99px; overflow: hidden; position: relative; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .4s ease; position: relative; overflow: hidden; }
+  .bar.running > div::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent); animation: shimmer 1.4s infinite; }
+  .bar.done > div { background: var(--ok); }
+  .bar.error > div { background: var(--err); }
+  @keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  .bar-label { display: flex; justify-content: space-between; margin-top: 8px; font-size: 14px; gap: 12px; }
+  .bar-label .pct { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .detail { color: var(--muted); font: 12px/1.4 ui-monospace, Consolas, monospace; margin-top: 4px; min-height: 1.4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stages { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 16px; padding: 0; list-style: none; font-size: 13px; }
+  .stages li { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+  .stages li::before { content: ""; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--line); }
+  .stages li.active { color: var(--ink); font-weight: 600; }
+  .stages li.active::before { border-color: var(--accent); background: var(--accent); animation: pulse 1.2s infinite; }
+  .stages li.done::before { border-color: var(--ok); background: var(--ok); }
+  .stages li.error { color: var(--err); }
+  .stages li.error::before { border-color: var(--err); background: var(--err); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .error-box { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: color-mix(in srgb, var(--err) 10%, transparent); color: var(--err); white-space: pre-wrap; font-size: 13px; }
+
+  .clips-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 12px; flex-wrap: wrap; }
+  .clips-head h2 { margin: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; }
+  .clip { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; background: var(--panel); }
+  .clip video { width: 100%; max-height: 460px; background: #000; display: block; }
+  .clip .body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .clip .title { font-weight: 600; line-height: 1.3; }
+  .clip .meta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--muted); }
+  .clip .meta span { background: var(--track); border-radius: 6px; padding: 2px 7px; }
+  .clip .meta .score { color: var(--ink); font-weight: 600; }
+  .clip .reason { font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .clip .btn { margin-top: auto; justify-content: center; }
+  .empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="mark">▶</div>
+    <div>
+      <h1>Viral Clips</h1>
+      <p>Upload a long video and get its best moments back as captioned clips.</p>
+    </div>
+  </header>
+
+  <section class="panel" id="upload-panel">
+    <h2>1. Upload a video</h2>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".mp4,.mov,.mkv,.webm,.m4v,.avi" hidden>
+      <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></div>
+      <strong id="drop-title">Drop a video here or click to choose one</strong>
+      <span id="drop-sub">MP4, MOV, MKV, WEBM, M4V or AVI. Saved to Data/Input_video for processing.</span>
+    </label>
+
+    <div class="settings">
+      <div class="field">
+        <label for="threshold">Virality threshold</label>
+        <div class="range">
+          <input type="range" id="threshold" min="0" max="1" step="0.05">
+          <output id="threshold-out"></output>
+        </div>
+        <small>Only moments scored at least this likely to go viral become clips.</small>
+      </div>
+      <div class="field">
+        <label for="top-n">Maximum clips</label>
+        <input type="number" id="top-n" min="1" step="1" placeholder="No limit">
+        <small>Leave empty to render every moment over the threshold.</small>
+      </div>
+      <div class="field">
+        <label>Format</label>
+        <label class="toggle"><input type="checkbox" id="reframe"> Reframe to vertical (9:16)</label>
+        <small>Off keeps the source aspect ratio.</small>
+      </div>
+    </div>
+
+    <button id="start" disabled>Upload &amp; process</button>
+  </section>
+
+  <section class="panel hidden" id="progress-panel">
+    <h2>2. Processing</h2>
+    <div class="job-head">
+      <span class="name" id="job-name"></span>
+      <span class="elapsed" id="elapsed"></span>
+    </div>
+    <div class="bar" id="bar"><div></div></div>
+    <div class="bar-label"><span id="message"></span><span class="pct" id="pct"></span></div>
+    <div class="detail" id="detail"></div>
+    <ul class="stages" id="stages"></ul>
+    <div class="error-box hidden" id="error"></div>
+  </section>
+
+  <section class="panel hidden" id="clips-panel">
+    <div class="clips-head">
+      <h2>3. Your clips</h2>
+    </div>
+    <div class="grid" id="grid"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let selected = null, extensions = [], polling = null, uploading = false;
+
+function formatBytes(n) {
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
+}
+function formatTime(s) {
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children.filter((c) => c != null));
+  return node;
+}
+
+// --- file choice -------------------------------------------------------------------
+function choose(file) {
+  if (!file) return;
+  const ext = "." + file.name.split(".").pop().toLowerCase();
+  if (extensions.length && !extensions.includes(ext)) {
+    alert(`${file.name} is not a supported video (${extensions.join(", ")}).`);
+    return;
+  }
+  selected = file;
+  $("drop").classList.add("has-file");
+  $("drop-title").textContent = file.name;
+  $("drop-sub").textContent = `${formatBytes(file.size)}. Click to choose a different video.`;
+  refreshButton();
+}
+$("file").addEventListener("change", (e) => choose(e.target.files[0]));
+const drop = $("drop");
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => choose(e.dataTransfer.files[0]));
+$("threshold").addEventListener("input", () => $("threshold-out").value = Number($("threshold").value).toFixed(2));
+
+let busy = false;
+function refreshButton() {
+  $("start").disabled = !selected || busy || uploading;
+  $("start").textContent = busy || uploading ? "Processing…" : "Upload & process";
+}
+
+// --- upload ------------------------------------------------------------------------
+$("start").addEventListener("click", () => {
+  const topN = $("top-n").value.trim();
+  if (topN && !(Number.isInteger(Number(topN)) && Number(topN) >= 1)) { alert("Maximum clips must be a whole number of 1 or more."); return; }
+  const params = new URLSearchParams({
+    filename: selected.name,
+    threshold: $("threshold").value,
+    top_n: topN,
+    reframe: $("reframe").checked ? "1" : "0",
+  });
+  uploading = true;
+  refreshButton();
+  $("clips-panel").classList.add("hidden");
+  showUpload(selected.name, 0, selected.size);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/upload?" + params);
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) showUpload(selected.name, e.loaded, e.total); };
+  xhr.onload = () => {
+    uploading = false;
+    let body = {};
+    try { body = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status >= 400) { showError(body.error || `Upload failed (HTTP ${xhr.status})`); refreshButton(); return; }
+    render(body.job);
+    startPolling();
+  };
+  xhr.onerror = () => { uploading = false; showError("Upload failed: the server could not be reached. Is the start.bat window still open?"); refreshButton(); };
+  xhr.send(selected);
+});
+
+function showUpload(name, loaded, total) {
+  $("progress-panel").classList.remove("hidden");
+  $("error").classList.add("hidden");
+  $("job-name").textContent = name;
+  $("elapsed").textContent = `${formatBytes(loaded)} of ${formatBytes(total)}`;
+  const pct = total ? (100 * loaded) / total : 0;
+  setBar(pct, "running");
+  $("message").textContent = pct >= 100 ? "Saving upload…" : "Uploading";
+  $("pct").textContent = `${pct.toFixed(0)}%`;
+  $("detail").textContent = "";
+  drawStages([{ label: "Upload", state: "active" }, ...stageNames.map((label) => ({ label, state: "pending" }))]);
+}
+function showError(message) {
+  $("progress-panel").classList.remove("hidden");
+  $("error").textContent = message;
+  $("error").classList.remove("hidden");
+  setBar(parseFloat($("bar").firstElementChild.style.width) || 0, "error");
+}
+
+// --- job status --------------------------------------------------------------------
+let stageNames = ["Transcribe", "Find moments", "Score virality", "Render clips"];
+function setBar(pct, state) {
+  $("bar").className = `bar ${state}`;
+  $("bar").firstElementChild.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+}
+function drawStages(stages) {
+  $("stages").replaceChildren(...stages.map((s) => el("li", { className: s.state, textContent: s.label })));
+}
+
+function render(job) {
+  busy = !!job && (job.state === "uploading" || job.state === "running");
+  refreshButton();
+  if (!job) return;
+  if (job.state === "uploading") return; // shown by the uploading tab itself
+  $("progress-panel").classList.remove("hidden");
+  $("job-name").textContent = job.video;
+  $("elapsed").textContent = `${job.state === "running" ? "Elapsed" : "Took"} ${formatTime(job.elapsed)}`;
+  setBar(job.percent, job.state === "done" ? "done" : job.state === "error" ? "error" : "running");
+  $("pct").textContent = `${Math.floor(job.percent)}%`;
+  $("message").textContent = job.state === "error" ? "Failed" : job.message;
+  $("detail").textContent = job.state === "running" ? job.detail : "";
+  drawStages([{ label: "Upload", state: "done" }, ...job.stages]);
+  $("error").classList.toggle("hidden", job.state !== "error");
+  if (job.state === "error") $("error").textContent = job.error;
+  if (job.state === "done") renderClips(job.clips);
+}
+
+function renderClips(clips) {
+  $("clips-panel").classList.remove("hidden");
+  if (!clips.length) {
+    $("grid").replaceChildren(el("p", { className: "empty", textContent: "No moment scored over the threshold. Lower the threshold and process the video again. The transcript is cached, so it won't be transcribed twice." }));
+    return;
+  }
+  $("grid").replaceChildren(...clips.map((c, i) => {
+    const src = `/clips/${encodeURIComponent(c.file)}`;
+    const meta = el("div", { className: "meta" },
+      c.p_viral != null ? el("span", { className: "score", textContent: `${Math.round(c.p_viral * 100)}% viral` }) : null,
+      c.duration != null ? el("span", { textContent: `${Math.round(c.duration)}s` }) : null,
+      c.start_hms ? el("span", { textContent: `from ${c.start_hms}` }) : null,
+      el("span", { textContent: formatBytes(c.size) }),
+    );
+    return el("article", { className: "clip" },
+      el("video", { src, controls: true, preload: "metadata", playsInline: true }),
+      el("div", { className: "body" },
+        el("div", { className: "title", textContent: `${i + 1}. ${c.title}` }),
+        meta,
+        c.reason ? el("div", { className: "reason", textContent: c.reason, title: c.reason }) : null,
+        el("a", { className: "btn", href: `${src}?download=1`, download: c.file, textContent: "Download" }),
+      ),
+    );
+  }));
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/status");
+    const { job } = await res.json();
+    render(job);
+    if (!job || !(job.state === "running" || job.state === "uploading")) stopPolling();
+  } catch {
+    $("detail").textContent = "Lost contact with the server. Is the start.bat window still open?";
+  }
+}
+function startPolling() { if (!polling) polling = setInterval(poll, 1000); }
+function stopPolling() { clearInterval(polling); polling = null; }
+
+// --- start -------------------------------------------------------------------------
+(async () => {
+  const res = await fetch("/api/status");
+  const { defaults, extensions: exts, job } = await res.json();
+  extensions = exts;
+  $("threshold").value = defaults.threshold;
+  $("threshold-out").value = Number(defaults.threshold).toFixed(2);
+  $("reframe").checked = defaults.reframe;
+  if (job) {
+    $("threshold").value = job.settings.threshold;
+    $("threshold-out").value = Number(job.settings.threshold).toFixed(2);
+    $("top-n").value = job.settings.top_n ?? "";
+    $("reframe").checked = job.settings.reframe;
+    render(job);
+    if (job.state === "running" || job.state === "uploading") startPolling();
+  }
+})();
+</script>
+</body>
+</html>

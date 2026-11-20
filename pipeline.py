@@ -14,6 +14,7 @@ import logging
 import re
 import tempfile
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,10 @@ from utils.openai_client import Moment
 from utils.transcript import Sentence, Word, format_timestamp
 
 log = logging.getLogger("viral_clips")
+
+# progress(fraction of the stage done, what it is doing now): lets a caller such as the web UI
+# follow a long stage. Every stage runs the same without one.
+Progress = Callable[[float, str], None] | None
 
 
 @dataclass
@@ -56,19 +61,21 @@ def report_path(video: Path) -> Path:
 
 # --- 1 + 2. Audio and transcription ---------------------------------------------------
 
-def load_media(video: Path, allow_transcribe: bool = False) -> Media:
+def load_media(video: Path, allow_transcribe: bool = False, progress: Progress = None) -> Media:
     """Extract the audio (for silences and the cache key) and load the transcript.
 
     ElevenLabs is only called when allow_transcribe is set and no transcript is cached.
     """
     with tempfile.TemporaryDirectory(prefix="viral_clips_") as tmp:
         wav = Path(tmp) / "audio.wav"
+        if progress:
+            progress(0.0, "Extracting audio")
         silences = audio.extract_audio(video, wav)
         duration = audio.wav_duration(wav)
         audio_hash = audio.file_sha256(wav)
         log.info("Audio: %s long, %d silences", format_timestamp(duration), len(silences))
         words, transcript_file = transcript.load_or_transcribe(
-            video, wav, audio_hash, duration, silences, allow_transcribe=allow_transcribe
+            video, wav, audio_hash, duration, silences, allow_transcribe=allow_transcribe, progress=progress
         )
     sentences = transcript.group_sentences(words)
     transcript_file.with_suffix(".txt").write_text(
@@ -129,7 +136,9 @@ def select(candidates: list[Candidate], threshold: float, top_n: int | None) -> 
     return [c for c in rank(candidates) if c.scores and c.scores["p_viral"] >= threshold][:top_n]
 
 
-def render_clips(media: Media, threshold: float, top_n: int | None, reframe_clips: bool) -> list[Path]:
+def render_clips(
+    media: Media, threshold: float, top_n: int | None, reframe_clips: bool, progress: Progress = None
+) -> list[Path]:
     """Cut, caption, reframe and encode the selected moments in moments.json. No API calls."""
     candidates = load_candidates(media)
     kept = select(candidates, threshold, top_n)
@@ -147,6 +156,8 @@ def render_clips(media: Media, threshold: float, top_n: int | None, reframe_clip
         video_filter = ""
         width, height = info.width, info.height
         if reframe_clips:
+            if progress:
+                progress((i - 1) / len(kept), f"Reframing clip {i} of {len(kept)}")
             plan = reframe.plan(media.video, c.cut, media.words, info, c.crop)
             c.crop = plan.to_dict()
             video_filter = reframe.crop_filter(plan)
@@ -159,6 +170,8 @@ def render_clips(media: Media, threshold: float, top_n: int | None, reframe_clip
         captions.write_ass(lines, folder / f"{name}.ass", width, height)
         captions.write_srt(lines, folder / f"{name}.srt")
         log.info("Rendering %d/%d: %s (%.0fs, %dx%d)", i, len(kept), name, c.cut.duration, width, height)
+        if progress:
+            progress((i - 1 + 0.5 * reframe_clips) / len(kept), f"Encoding clip {i} of {len(kept)}")
         tail = c.cut.end - media.words[c.cut.last_word].end  # fade the audio out after the last word
         render.render_clip(
             media.video, c.cut.start, c.cut.end, folder / f"{name}.ass", folder / f"{name}.mp4", video_filter, tail

@@ -152,3 +152,7 @@ RENDER_PRESET = os.getenv("RENDER_PRESET", "slow")  # libx264 only
 # auto = NVIDIA's GPU encoder (h264_nvenc) when it works on this machine, else libx264 on the CPU
 RENDER_ENCODER = os.getenv("RENDER_ENCODER", "auto")
 RENDER_AUDIO_BITRATE = os.getenv("RENDER_AUDIO_BITRATE", "256k")
+
+# Web UI (start.bat / python webapp.py); local only, never exposed beyond this machine
+WEB_HOST = "127.0.0.1"
+WEB_PORT = _int("WEB_PORT", 8000)
