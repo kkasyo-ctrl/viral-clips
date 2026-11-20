@@ -45,6 +45,43 @@
   .field .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 8px 0 0; margin: 0; font-weight: 400; font-size: 14px; }
   .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 
+  .step-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .step-head h2 { margin: 0; }
+  .step-head .segmented label { cursor: pointer; font-size: 14px; }
+  .link-box { display: flex; flex-direction: column; gap: 10px; }
+  .link-row { display: flex; gap: 10px; }
+  .link-row input { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--ink); font: inherit; }
+  .link-row input:focus, .section-row input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .link-error { padding: 10px 12px; border-radius: 9px; background: color-mix(in srgb, var(--err) 10%, transparent); color: var(--err); font-size: 13px; }
+  .link-card { display: flex; gap: 14px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
+  .link-card img { width: 160px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--track); flex: none; }
+  .link-meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .link-meta strong { line-height: 1.3; overflow-wrap: anywhere; }
+  .link-meta span { color: var(--muted); font-size: 13px; }
+  .link-warning { color: #b26a00; font-size: 13px; }
+  .section-box { padding: 14px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 7%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+  .section-box p { margin: 0 0 10px; font-size: 14px; }
+  .section-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+  .section-row label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .section-row input { width: 110px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); font: inherit; font-variant-numeric: tabular-nums; }
+  .section-row input.bad { border-color: var(--err); }
+  #sec-len { color: var(--muted); font-size: 13px; }
+  #sec-len.bad { color: var(--err); }
+  @media (max-width: 520px) { .link-card { flex-direction: column; align-items: stretch; } .link-card img { width: 100%; } }
+  .segmented { display: inline-flex; padding: 3px; gap: 3px; border-radius: 10px; background: var(--track); }
+  .field .segmented label { display: block; margin: 0; font-weight: 500; font-size: 14px; cursor: pointer; }
+  .segmented input { position: absolute; opacity: 0; pointer-events: none; }
+  .segmented span { display: block; padding: 6px 16px; border-radius: 8px; color: var(--muted); transition: background .15s, color .15s; }
+  .segmented input:checked + span { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .segmented input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .cam-row { display: flex; gap: 14px; align-items: center; }
+  .cam-control { flex: 1; min-width: 0; }
+  .phone { width: 38px; height: 68px; flex: none; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; border: 2px solid var(--ink); font-size: 7px; font-weight: 700; letter-spacing: .04em; }
+  .phone > div { display: grid; place-items: center; }
+  .phone .cam { background: color-mix(in srgb, var(--accent) 30%, var(--panel)); color: var(--accent); border-bottom: 1.5px solid var(--ink); transition: height .1s; }
+  .phone .game { flex: 1; background: var(--track); color: var(--muted); }
+
   button, .btn { appearance: none; border: 0; border-radius: 9px; padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer; background: var(--accent); color: var(--accent-ink); text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }
   button:disabled { opacity: .45; cursor: not-allowed; }
   .btn.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
@@ -93,12 +130,44 @@
     <div class="mark">▶</div>
     <div>
       <h1>Viral Clips</h1>
-      <p>Upload a long video and get its best moments back as captioned clips.</p>
+      <p>Upload a long video or paste a link to one, and get its best moments back as captioned clips.</p>
     </div>
   </header>
 
   <section class="panel" id="upload-panel">
-    <h2>1. Upload a video</h2>
+    <div class="step-head">
+      <h2>1. Choose a video</h2>
+      <div class="segmented" role="radiogroup" aria-label="Video source">
+        <label><input type="radio" name="source" value="upload" checked><span>Upload</span></label>
+        <label><input type="radio" name="source" value="link"><span>Link</span></label>
+      </div>
+    </div>
+
+    <div class="link-box hidden" id="link-box">
+      <div class="link-row">
+        <input type="url" id="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" spellcheck="false">
+        <button class="btn secondary" id="check" type="button">Check link</button>
+      </div>
+      <small class="hint">YouTube, Twitch, Kick, X, TikTok, Vimeo, direct video links and many more. Downloaded at up to 1080p into Data/Input_video.</small>
+      <div class="link-error hidden" id="link-error"></div>
+      <div class="link-card hidden" id="link-card">
+        <img id="link-thumb" alt="" referrerpolicy="no-referrer">
+        <div class="link-meta">
+          <strong id="link-title"></strong>
+          <span id="link-sub"></span>
+          <div class="link-warning hidden" id="link-warning"></div>
+        </div>
+      </div>
+      <div class="section-box hidden" id="section-box">
+        <p id="section-intro"></p>
+        <div class="section-row">
+          <label>From <input id="sec-start" placeholder="0:00:00" inputmode="numeric"></label>
+          <label>To <input id="sec-end" placeholder="4:00:00" inputmode="numeric"></label>
+          <span id="sec-len"></span>
+        </div>
+      </div>
+    </div>
+
     <label class="drop" id="drop">
       <input type="file" id="file" accept=".mp4,.mov,.mkv,.webm,.m4v,.avi" hidden>
       <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></div>
@@ -107,6 +176,14 @@
     </label>
 
     <div class="settings">
+      <div class="field">
+        <label>Clip format</label>
+        <div class="segmented" role="radiogroup">
+          <label><input type="radio" name="format" value="podcast"><span>Podcast</span></label>
+          <label><input type="radio" name="format" value="gaming"><span>Gaming</span></label>
+        </div>
+        <small id="format-help"></small>
+      </div>
       <div class="field">
         <label for="threshold">Virality threshold</label>
         <div class="range">
@@ -120,10 +197,23 @@
         <input type="number" id="top-n" min="1" step="1" placeholder="No limit">
         <small>Leave empty to render every moment over the threshold.</small>
       </div>
-      <div class="field">
-        <label>Format</label>
+      <div class="field" id="reframe-field">
+        <label>Framing</label>
         <label class="toggle"><input type="checkbox" id="reframe"> Reframe to vertical (9:16)</label>
         <small>Off keeps the source aspect ratio.</small>
+      </div>
+      <div class="field hidden" id="cam-field">
+        <label for="cam-share">Facecam height</label>
+        <div class="cam-row">
+          <div class="phone" aria-hidden="true"><div class="cam" id="cam-preview">CAM</div><div class="game">GAME</div></div>
+          <div class="cam-control">
+            <div class="range">
+              <input type="range" id="cam-share" step="0.01">
+              <output id="cam-share-out"></output>
+            </div>
+            <small>How much of the frame the streamer gets. Captions sit on the seam.</small>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -193,22 +283,183 @@ const drop = $("drop");
 drop.addEventListener("drop", (e) => choose(e.dataTransfer.files[0]));
 $("threshold").addEventListener("input", () => $("threshold-out").value = Number($("threshold").value).toFixed(2));
 
-let busy = false;
-function refreshButton() {
-  $("start").disabled = !selected || busy || uploading;
-  $("start").textContent = busy || uploading ? "Processing…" : "Upload & process";
+// --- clip format -------------------------------------------------------------------
+const FORMAT_HELP = {
+  podcast: "People talking. The vertical crop follows whoever is speaking.",
+  gaming: "A stream with a facecam. The streamer goes on top, the game below.",
+};
+const clipFormat = () => document.querySelector("input[name=format]:checked").value;
+function setFormat(value) {
+  document.querySelector(`input[name=format][value=${value}]`).checked = true;
+  applyFormat();
+}
+function applyFormat() {
+  const gaming = clipFormat() === "gaming";
+  $("cam-field").classList.toggle("hidden", !gaming);
+  $("reframe-field").classList.toggle("hidden", gaming);
+  $("format-help").textContent = FORMAT_HELP[clipFormat()];
+}
+function setCamShare(value) {
+  $("cam-share").value = value;
+  showCamShare();
+}
+function showCamShare() {
+  const share = Number($("cam-share").value);
+  $("cam-share-out").value = `${Math.round(share * 100)}%`;
+  $("cam-preview").style.height = `${share * 100}%`;
+}
+document.querySelectorAll("input[name=format]").forEach((r) => r.addEventListener("change", applyFormat));
+$("cam-share").addEventListener("input", showCamShare);
+
+// --- source: upload or link --------------------------------------------------------
+const source = () => document.querySelector("input[name=source]:checked").value;
+function setSource(value) {
+  document.querySelector(`input[name=source][value=${value}]`).checked = true;
+  applySource();
+}
+function applySource() {
+  const link = source() === "link";
+  $("drop").classList.toggle("hidden", link);
+  $("link-box").classList.toggle("hidden", !link);
+  refreshButton();
+}
+document.querySelectorAll("input[name=source]").forEach((r) => r.addEventListener("change", applySource));
+
+let checked = null, checking = false; // the link's details once checked
+function parseTime(text) {
+  // "1:20:00", "80:00" or "4800" -> seconds; NaN if it isn't a time
+  const parts = text.trim().split(":");
+  if (!text.trim() || parts.length > 3 || parts.some((p) => !/^\d+(\.\d+)?$/.test(p))) return NaN;
+  return parts.reduce((total, p) => total * 60 + Number(p), 0);
+}
+function section() {
+  // [start, end] in seconds, or an error message
+  const start = parseTime($("sec-start").value), end = parseTime($("sec-end").value);
+  $("sec-start").classList.toggle("bad", isNaN(start));
+  $("sec-end").classList.toggle("bad", isNaN(end));
+  if (isNaN(start) || isNaN(end)) return "Enter times like 1:20:00";
+  if (end <= start) return "The end has to come after the start";
+  if (end > checked.duration + 1) return `The video ends at ${formatTime(checked.duration)}`;
+  if (end - start > checked.max_section) return `That's ${formatTime(end - start)}; the most is ${formatTime(checked.max_section)}`;
+  return [start, end];
+}
+function showSection() {
+  if (!checked || !checked.long) return;
+  const result = section();
+  const ok = Array.isArray(result);
+  $("sec-len").textContent = ok ? `${formatTime(result[1] - result[0])} to download` : result;
+  $("sec-len").classList.toggle("bad", !ok);
+  refreshButton();
+}
+["sec-start", "sec-end"].forEach((id) => $(id).addEventListener("input", showSection));
+
+function resetLink() {
+  checked = null;
+  ["link-card", "section-box", "link-error"].forEach((id) => $(id).classList.add("hidden"));
+  refreshButton();
+}
+$("url").addEventListener("input", resetLink);
+$("url").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); checkLink(); } });
+$("check").addEventListener("click", checkLink);
+
+async function checkLink() {
+  const url = $("url").value.trim();
+  if (!url || checking) return;
+  resetLink();
+  checking = true;
+  $("check").disabled = true;
+  $("check").textContent = "Checking…";
+  try {
+    const res = await fetch("/api/link/check", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    if ($("url").value.trim() !== url) return; // the link changed while it was being checked
+    showLink(body.link, body.warning);
+  } catch (err) {
+    $("link-error").textContent = err.message.startsWith("Failed to fetch")
+      ? "The server could not be reached. Is the start.bat window still open?" : err.message;
+    $("link-error").classList.remove("hidden");
+  } finally {
+    checking = false;
+    $("check").disabled = false;
+    $("check").textContent = "Check link";
+    refreshButton();
+  }
 }
 
-// --- upload ------------------------------------------------------------------------
-$("start").addEventListener("click", () => {
+function showLink(link, warning) {
+  checked = link;
+  $("link-thumb").src = link.thumbnail || "";
+  $("link-thumb").classList.toggle("hidden", !link.thumbnail);
+  $("link-title").textContent = link.title;
+  $("link-sub").textContent = [link.site, link.duration ? formatTime(link.duration) : "length unknown"].filter(Boolean).join(" · ");
+  $("link-warning").textContent = warning || "";
+  $("link-warning").classList.toggle("hidden", !warning);
+  $("link-card").classList.remove("hidden");
+  $("section-box").classList.toggle("hidden", !link.long);
+  if (link.long) {
+    $("section-intro").textContent = `This video is ${formatTime(link.duration)} long. Pick the part to download, up to ${formatTime(link.max_section)}.`;
+    if (!$("sec-start").value) $("sec-start").value = "0:00:00";
+    if (!$("sec-end").value) $("sec-end").value = formatTime(link.max_section);
+    showSection();
+  }
+}
+
+let busy = false;
+function refreshButton() {
+  const link = source() === "link";
+  const ready = link ? checked && (!checked.long || Array.isArray(section())) : selected;
+  $("start").disabled = !ready || busy || uploading;
+  $("start").textContent = busy || uploading ? "Processing…" : link ? "Download & process" : "Upload & process";
+}
+
+// --- start -------------------------------------------------------------------------
+function settings() {
   const topN = $("top-n").value.trim();
-  if (topN && !(Number.isInteger(Number(topN)) && Number(topN) >= 1)) { alert("Maximum clips must be a whole number of 1 or more."); return; }
-  const params = new URLSearchParams({
-    filename: selected.name,
+  if (topN && !(Number.isInteger(Number(topN)) && Number(topN) >= 1)) { alert("Maximum clips must be a whole number of 1 or more."); return null; }
+  return {
     threshold: $("threshold").value,
     top_n: topN,
     reframe: $("reframe").checked ? "1" : "0",
-  });
+    format: clipFormat(),
+    cam_share: $("cam-share").value,
+  };
+}
+
+$("start").addEventListener("click", () => (source() === "link" ? startLink() : startUpload()));
+
+async function startLink() {
+  const chosen = settings();
+  if (!chosen) return;
+  const body = { url: checked.url, ...chosen };
+  if (checked.long) [body.start, body.end] = section();
+  uploading = true;
+  refreshButton();
+  $("clips-panel").classList.add("hidden");
+  $("error").classList.add("hidden");
+  try {
+    const res = await fetch("/api/link", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const reply = await res.json();
+    if (!res.ok) throw new Error(reply.error || `HTTP ${res.status}`);
+    render(reply.job);
+    startPolling();
+  } catch (err) {
+    showError(err.message.startsWith("Failed to fetch")
+      ? "The server could not be reached. Is the start.bat window still open?" : err.message);
+  } finally {
+    uploading = false;
+    refreshButton();
+  }
+}
+
+function startUpload() {
+  const chosen = settings();
+  if (!chosen) return;
+  const params = new URLSearchParams({ filename: selected.name, ...chosen });
   uploading = true;
   refreshButton();
   $("clips-panel").classList.add("hidden");
@@ -228,7 +479,7 @@ $("start").addEventListener("click", () => {
   };
   xhr.onerror = () => { uploading = false; showError("Upload failed: the server could not be reached. Is the start.bat window still open?"); refreshButton(); };
   xhr.send(selected);
-});
+}
 
 function showUpload(name, loaded, total) {
   $("progress-panel").classList.remove("hidden");
@@ -265,13 +516,14 @@ function render(job) {
   if (!job) return;
   if (job.state === "uploading") return; // shown by the uploading tab itself
   $("progress-panel").classList.remove("hidden");
-  $("job-name").textContent = job.video;
+  $("job-name").textContent = `${job.link ? job.link.title : job.video} · ${job.settings.format === "gaming" ? "Gaming" : "Podcast"}`;
   $("elapsed").textContent = `${job.state === "running" ? "Elapsed" : "Took"} ${formatTime(job.elapsed)}`;
   setBar(job.percent, job.state === "done" ? "done" : job.state === "error" ? "error" : "running");
   $("pct").textContent = `${Math.floor(job.percent)}%`;
   $("message").textContent = job.state === "error" ? "Failed" : job.message;
   $("detail").textContent = job.state === "running" ? job.detail : "";
-  drawStages([{ label: "Upload", state: "done" }, ...job.stages]);
+  // A link job's stages start with its download; an upload has already finished uploading.
+  drawStages(job.source === "link" ? job.stages : [{ label: "Upload", state: "done" }, ...job.stages]);
   $("error").classList.toggle("hidden", job.state !== "error");
   if (job.state === "error") $("error").textContent = job.error;
   if (job.state === "done") renderClips(job.clips);
@@ -319,16 +571,26 @@ function stopPolling() { clearInterval(polling); polling = null; }
 // --- start -------------------------------------------------------------------------
 (async () => {
   const res = await fetch("/api/status");
-  const { defaults, extensions: exts, job } = await res.json();
+  const { defaults, extensions: exts, cam_share_range: [camLo, camHi], job } = await res.json();
   extensions = exts;
   $("threshold").value = defaults.threshold;
   $("threshold-out").value = Number(defaults.threshold).toFixed(2);
   $("reframe").checked = defaults.reframe;
+  $("cam-share").min = camLo;
+  $("cam-share").max = camHi;
+  setCamShare(defaults.cam_share);
+  setFormat(defaults.format);
   if (job) {
     $("threshold").value = job.settings.threshold;
     $("threshold-out").value = Number(job.settings.threshold).toFixed(2);
     $("top-n").value = job.settings.top_n ?? "";
     $("reframe").checked = job.settings.reframe;
+    setCamShare(job.settings.cam_share);
+    setFormat(job.settings.format);
+    if (job.link) {
+      setSource("link");
+      $("url").value = job.link.url;
+    }
     render(job);
     if (job.state === "running" || job.state === "uploading") startPolling();
   }

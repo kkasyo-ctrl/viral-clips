@@ -81,8 +81,15 @@ def _layout(width: int, height: int) -> tuple[int, int, int, int]:
     return font_size, outline, round(height * (1 - config.CAPTION_BASELINE)), round(width * 0.06)
 
 
-def write_ass(lines: list[list[CaptionWord]], path: Path, width: int, height: int) -> None:
+def write_ass(
+    lines: list[list[CaptionWord]], path: Path, width: int, height: int, center_y: int | None = None
+) -> None:
+    """center_y centres every line on that row instead of the usual bottom placement: the
+    gaming layout puts its captions on the seam between the cam and the game."""
     font_size, outline, margin_v, margin_h = _layout(width, height)
+    alignment, place = 2, ""  # bottom centre
+    if center_y is not None:
+        alignment, place = 5, f"{{\\pos({width // 2},{center_y})}}"  # middle centre, on the row
     r, g, b = (config.CAPTION_HIGHLIGHT.lstrip("#")[i : i + 2] for i in (0, 2, 4))
     highlight = f"&H{b}{g}{r}&".upper()
 
@@ -99,7 +106,7 @@ def write_ass(lines: list[list[CaptionWord]], path: Path, width: int, height: in
         "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
         "MarginR, MarginV, Encoding",
         f"Style: Caption,{config.CAPTION_FONT},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,"
-        f"100,100,0,0,1,{outline},0,2,{margin_h},{margin_h},{margin_v},1",
+        f"100,100,0,0,1,{outline},0,{alignment},{margin_h},{margin_h},{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -114,7 +121,7 @@ def write_ass(lines: list[list[CaptionWord]], path: Path, width: int, height: in
                 f"{{\\c{highlight}}}{_ass_safe(w.text)}{{\\r}}" if i == active else _ass_safe(w.text)
                 for i, w in enumerate(line)
             )
-            out.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{text}")
+            out.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{place}{text}")
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 

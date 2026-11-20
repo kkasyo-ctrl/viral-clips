@@ -50,6 +50,14 @@ TRANSCRIPTS_DIR = DATA_DIR / "Transcripts"
 CLIPS_DIR = DATA_DIR / "clips"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 
+# What kind of video this is, which decides how moments are judged and how clips are laid out:
+#   podcast  people talking; the vertical crop follows whoever is speaking
+#   gaming   a stream with a facecam over gameplay; the cam goes on top, the game below
+FORMATS = ("podcast", "gaming")
+CLIP_FORMAT = os.getenv("CLIP_FORMAT", "podcast").strip().lower()
+if CLIP_FORMAT not in FORMATS:
+    raise SystemExit(f"CLIP_FORMAT must be one of {', '.join(FORMATS)}, not {CLIP_FORMAT!r}")
+
 # External tools
 FFMPEG = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE = os.getenv("FFPROBE_BIN", "ffprobe")
@@ -58,6 +66,10 @@ FFPROBE = os.getenv("FFPROBE_BIN", "ffprobe")
 AUDIO_SAMPLE_RATE = 16_000
 SILENCE_NOISE_DB = _float("SILENCE_NOISE_DB", -30.0)
 SILENCE_MIN_SECONDS = 0.3
+# Loudness spikes (shouting, laughing, rage) are handed to the moment finder as hints on
+# gaming streams: windows this many dB over the video's median loudness.
+LOUDNESS_WINDOW_SECONDS = 0.5
+LOUDNESS_SPIKE_DB = _float("LOUDNESS_SPIKE_DB", 8.0)
 
 # 2. Transcription (OpenRouter by default, ElevenLabs Scribe still selectable)
 TRANSCRIBE_PROVIDER = os.getenv("TRANSCRIBE_PROVIDER", "openrouter").strip().lower()
@@ -145,6 +157,18 @@ REFRAME_TRACK_INTERVAL = _float("REFRAME_TRACK_INTERVAL", 0.25)
 REFRAME_TRACK_DEADZONE = _float("REFRAME_TRACK_DEADZONE", 0.10)
 REFRAME_PAN_SECONDS = _float("REFRAME_PAN_SECONDS", 0.4)
 
+# 8b. Gaming layout (local): the streamer's facecam on top, the gameplay below
+GAMING_CAM_SHARE = _float("GAMING_CAM_SHARE", 1 / 3)  # the cam's share of the frame height
+GAMING_CAM_SHARE_RANGE = (0.25, 0.5)
+GAMING_DETECT_SAMPLES = _int("GAMING_DETECT_SAMPLES", 40)  # frames read across the video to find the cam
+# The facecam is the face that holds one spot through the stream: in at least this share
+# of the sampled frames, within this fraction of the frame width of its usual place.
+GAMING_CAM_MIN_PRESENCE = _float("GAMING_CAM_MIN_PRESENCE", 0.4)
+GAMING_CAM_MAX_DRIFT = _float("GAMING_CAM_MAX_DRIFT", 0.04)
+# A face taller than this share of the frame is a full-screen camera, not a facecam overlay.
+GAMING_CAM_MAX_FACE = 0.35
+GAMING_CLIP_CHECK_SAMPLES = 5  # frames per clip checked for the streamer being in the cam
+
 
 # 9. Render
 RENDER_CRF = _int("RENDER_CRF", 17)
@@ -156,3 +180,8 @@ RENDER_AUDIO_BITRATE = os.getenv("RENDER_AUDIO_BITRATE", "256k")
 # Web UI (start.bat / python webapp.py); local only, never exposed beyond this machine
 WEB_HOST = "127.0.0.1"
 WEB_PORT = _int("WEB_PORT", 8000)
+
+# Videos from a link (web UI), downloaded with yt-dlp into INPUT_DIR
+DOWNLOAD_MAX_HEIGHT = _int("DOWNLOAD_MAX_HEIGHT", 1080)  # clips ship at 1080x1920; more is wasted download
+# A video at least this long has to be given a section to download, no longer than this either.
+DOWNLOAD_LONG_SECONDS = _float("DOWNLOAD_LONG_SECONDS", 4 * 3600)

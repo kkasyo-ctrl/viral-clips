@@ -25,8 +25,8 @@ def client(tmp_path, monkeypatch):
         calls.append(("load", video, allow_transcribe))
         return video
 
-    def render_clips(video, threshold, top_n, reframe_clips, progress=None):
-        calls.append(("render", threshold, top_n, reframe_clips))
+    def render_clips(video, threshold, top_n, reframe_clips, progress=None, clip_format="podcast", cam_share=None):
+        calls.append(("render", threshold, top_n, reframe_clips, clip_format, cam_share))
         folder = pipeline.out_dir(video)
         folder.mkdir(parents=True)
         (folder / "01_big-moment.mp4").write_bytes(b"fake mp4")
@@ -38,8 +38,8 @@ def client(tmp_path, monkeypatch):
         return [folder / "01_big-moment.mp4"]
 
     monkeypatch.setattr(pipeline, "load_media", load_media)
-    monkeypatch.setattr(pipeline, "find", lambda media: calls.append(("find",)))
-    monkeypatch.setattr(pipeline, "score", lambda media: calls.append(("score",)))
+    monkeypatch.setattr(pipeline, "find", lambda media, clip_format: calls.append(("find", clip_format)))
+    monkeypatch.setattr(pipeline, "score", lambda media, clip_format: calls.append(("score", clip_format)))
     monkeypatch.setattr(pipeline, "render_clips", render_clips)
     client = webapp.app.test_client()
     client.calls = calls
@@ -66,12 +66,21 @@ def test_upload_runs_every_stage_and_serves_the_clips(client):
     assert (config.INPUT_DIR / "My talk.mp4").read_bytes() == b"video bytes"
     assert [c[0] for c in client.calls] == ["load", "find", "score", "render"]
     assert client.calls[0][2] is True  # transcribes on a cache miss
-    assert client.calls[-1] == ("render", 0.4, 3, False)
+    assert client.calls[-1] == ("render", 0.4, 3, False, "podcast", config.GAMING_CAM_SHARE)
     assert [c["title"] for c in job["clips"]] == ["Big moment"]
 
     assert client.get("/clips/01_big-moment.mp4").data == b"fake mp4"
     download = client.get("/clips/01_big-moment.mp4?download=1")
     assert "attachment" in download.headers["Content-Disposition"]
+
+
+def test_gaming_format_reaches_every_stage(client):
+    client.post("/api/upload?filename=stream.mp4&format=gaming&cam_share=0.4", data=b"stream")
+    job = _wait(client)
+    assert job["state"] == "done", job["error"]
+    assert job["settings"]["format"] == "gaming"
+    assert ("find", "gaming") in client.calls and ("score", "gaming") in client.calls
+    assert client.calls[-1][-2:] == ("gaming", 0.4)
 
 
 def test_same_video_is_reused_and_a_different_one_kept_alongside(client):
@@ -89,6 +98,8 @@ def test_same_video_is_reused_and_a_different_one_kept_alongside(client):
     ("filename=a.mp4&threshold=2", "between 0 and 1"),
     ("filename=a.mp4&top_n=0", "at least 1"),
     ("filename=a.mp4&top_n=many", "whole number"),
+    ("filename=a.mp4&format=vlog", "Format must be"),
+    ("filename=a.mp4&format=gaming&cam_share=0.9", "Cam height"),
 ])
 def test_bad_uploads_are_refused(client, query, message):
     res = client.post(f"/api/upload?{query}", data=b"x")
@@ -103,7 +114,7 @@ def test_a_second_upload_waits_for_the_first(client, monkeypatch):
 
 
 def test_a_failing_stage_is_reported(client, monkeypatch):
-    def boom(media):
+    def boom(media, clip_format):
         raise RuntimeError("OpenAI said no")
     monkeypatch.setattr(pipeline, "find", boom)
     client.post("/api/upload?filename=talk.mp4", data=b"x")

@@ -11,7 +11,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-python -c "import flask" >nul 2>nul
+python -c "import flask, yt_dlp" >nul 2>nul
 if errorlevel 1 (
     echo Installing the web page's dependencies...
     python -m pip install -r requirements.txt
@@ -21,6 +21,14 @@ if errorlevel 1 (
         exit /b 1
     )
 )
+
+rem Sites change often and old yt-dlp versions stop working, so keep it current.
+rem Offline, this fails quietly and the installed version is used.
+echo Checking for yt-dlp updates...
+python -m pip install --quiet --upgrade --disable-pip-version-check "yt-dlp[default]" >nul 2>nul
+
+where deno >nul 2>nul
+if errorlevel 1 echo Note: Deno is not installed, so YouTube links may fail. See the README.
 
 python webapp.py
 if errorlevel 1 pause

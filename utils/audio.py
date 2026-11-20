@@ -1,4 +1,5 @@
-"""Step 1: pull a 16 kHz mono WAV out of the video and detect silences in the same ffmpeg pass."""
+"""Step 1: pull a 16 kHz mono WAV out of the video and detect silences in the same ffmpeg pass.
+Loudness spikes are read from the same WAV afterwards."""
 import hashlib
 import re
 import shutil
@@ -21,6 +22,14 @@ class Silence:
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+
+@dataclass(frozen=True)
+class Peak:
+    """A stretch noticeably louder than the video's usual level: shouting, laughing, a scream."""
+    start: float
+    end: float
+    gain_db: float  # the loudest window, in dB over the video's median
 
 
 def require_ffmpeg() -> None:
@@ -61,6 +70,46 @@ def parse_silences(ffmpeg_log: str, duration: float) -> list[Silence]:
     if start is not None:  # audio ends while still silent
         silences.append(Silence(start, duration))
     return silences
+
+
+def loudness_peaks(
+    wav: Path, window: float | None = None, threshold_db: float | None = None
+) -> list[Peak]:
+    """Stretches of the WAV at least threshold_db louder than its median window.
+
+    Read a minute at a time, so a stream several hours long never sits in memory whole.
+    Silent windows are left out of the median: a stream with long quiet gaps would
+    otherwise make ordinary talking look like shouting.
+    """
+    import numpy as np
+
+    window = window or config.LOUDNESS_WINDOW_SECONDS
+    threshold_db = config.LOUDNESS_SPIKE_DB if threshold_db is None else threshold_db
+    levels = []
+    with wave.open(str(wav), "rb") as reader:
+        size = max(1, round(window * reader.getframerate()))
+        while block := reader.readframes(size * 120):
+            samples = np.frombuffer(block, dtype="<i2").astype(np.float32) / 32768
+            usable = len(samples) // size * size
+            if usable:
+                rms = np.sqrt(np.mean(samples[:usable].reshape(-1, size) ** 2, axis=1))
+                levels.append(20 * np.log10(np.maximum(rms, 1e-6)))
+    if not levels:
+        return []
+    db = np.concatenate(levels)
+    voiced = db[db > -50]
+    if not len(voiced):
+        return []
+    gain = db - float(np.median(voiced))
+
+    peaks, start = [], None
+    for i, g in enumerate(np.append(gain, -np.inf)):  # the sentinel closes a peak at the end
+        if g >= threshold_db and start is None:
+            start = i
+        elif g < threshold_db and start is not None:
+            peaks.append(Peak(round(start * window, 2), round(i * window, 2), round(float(gain[start:i].max()), 1)))
+            start = None
+    return peaks
 
 
 def wav_duration(path: Path) -> float:

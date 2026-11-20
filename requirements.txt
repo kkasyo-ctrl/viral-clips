@@ -1,4 +1,5 @@
 flask>=3.0  # web UI (start.bat)
+yt-dlp[default]>=2025.11  # videos from links (web UI); start.bat keeps it updated
 httpx>=0.27
 openai>=1.84
 pydantic>=2.7

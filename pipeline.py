@@ -8,6 +8,10 @@
 Only `transcribe` ever calls ElevenLabs; the later stages read the cached transcript and
 fail if it is missing. Cut points are planned afresh from the transcript in every stage
 that needs them, so they are always the same for the same moment.
+
+`find`, `score` and `render` take the clip format (config.FORMATS): a podcast is judged on
+its words and reframed onto whoever is speaking; a gaming stream is judged on the
+streamer's words and how loud they get, and laid out with the facecam above the game.
 """
 import json
 import logging
@@ -15,12 +19,12 @@ import re
 import tempfile
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import config
-from utils import audio, captions, cutting, jev_client, moments, reframe, render, transcript
-from utils.audio import Silence
+from utils import audio, captions, cutting, gaming, jev_client, moments, reframe, render, transcript
+from utils.audio import Peak, Silence
 from utils.cutting import Cut
 from utils.openai_client import Moment
 from utils.transcript import Sentence, Word, format_timestamp
@@ -40,6 +44,7 @@ class Media:
     sentences: list[Sentence]
     silences: list[Silence]
     duration: float
+    peaks: list[Peak] = field(default_factory=list)  # loudness spikes, read on gaming streams
 
 
 @dataclass
@@ -49,6 +54,7 @@ class Candidate:
     text: str
     scores: dict[str, float] | None
     crop: dict | None = None  # the crop plan this clip was reframed with, if any
+    layout: dict | None = None  # the gaming layout this clip was rendered with, if any
 
 
 def out_dir(video: Path) -> Path:
@@ -73,7 +79,8 @@ def load_media(video: Path, allow_transcribe: bool = False, progress: Progress =
         silences = audio.extract_audio(video, wav)
         duration = audio.wav_duration(wav)
         audio_hash = audio.file_sha256(wav)
-        log.info("Audio: %s long, %d silences", format_timestamp(duration), len(silences))
+        peaks = audio.loudness_peaks(wav)
+        log.info("Audio: %s long, %d silences, %d loud peaks", format_timestamp(duration), len(silences), len(peaks))
         words, transcript_file = transcript.load_or_transcribe(
             video, wav, audio_hash, duration, silences, allow_transcribe=allow_transcribe, progress=progress
         )
@@ -84,7 +91,7 @@ def load_media(video: Path, allow_transcribe: bool = False, progress: Progress =
     log.info("Transcript: %d words, %d sentences", len(words), len(sentences))
     if words and not transcript.has_diarization(words):
         log.warning("Transcript has no speaker IDs; every clip will be reframed as single-speaker")
-    return Media(video, words, sentences, silences, duration)
+    return Media(video, words, sentences, silences, duration, peaks)
 
 
 def transcribe(video: Path) -> Media:
@@ -93,12 +100,12 @@ def transcribe(video: Path) -> Media:
 
 # --- 3. Moment extraction -------------------------------------------------------------
 
-def find(media: Media) -> list[Candidate]:
+def find(media: Media, clip_format: str = "podcast") -> list[Candidate]:
     """Ask the LLM for moments and write them, unscored, to moments.json."""
     if not media.sentences:
         log.warning("No speech found; no moments to look for")
         return []
-    found = moments.find_moments(media.sentences)
+    found = moments.find_moments(media.sentences, clip_format, media.peaks)
     log.info("%s proposed %d moments", config.MOMENTS_MODEL, len(found))
     candidates = _candidates(media, found, [None] * len(found))
     write_report(media.video, candidates, {})
@@ -107,14 +114,16 @@ def find(media: Media) -> list[Candidate]:
 
 # --- 4. Virality scores ---------------------------------------------------------------
 
-def score(media: Media) -> list[Candidate]:
+def score(media: Media, clip_format: str = "podcast") -> list[Candidate]:
     """Score the moments in moments.json with Jev and write the scores back."""
     candidates = load_candidates(media)
     if not candidates:
         return []
-    scores = jev_client.score_clips(
-        [{"clip_transcript": c.text, "clip_duration_seconds": round(c.cut.duration, 1)} for c in candidates]
-    )
+    states = [{"clip_transcript": c.text, "clip_duration_seconds": round(c.cut.duration, 1)} for c in candidates]
+    if clip_format == "gaming":
+        for state, c in zip(states, candidates):
+            state["loud_moments"] = loud_moments(c.cut, media.peaks)
+    scores = jev_client.score_clips(states, clip_format)
     for c, s in zip(candidates, scores):
         c.scores = s
     failed = sum(s is None for s in scores)
@@ -125,7 +134,13 @@ def score(media: Media) -> list[Candidate]:
     return candidates
 
 
-# --- 5-9. Threshold, captions, reframing, encode --------------------------------------
+def loud_moments(cut: Cut, peaks: list[Peak]) -> str:
+    """Where in the clip the streamer got loud, in clip time: '0:04 +11 dB, 0:21 +9 dB'."""
+    offsets = [(max(p.start - cut.start, 0), p.gain_db) for p in peaks if p.end > cut.start and p.start < cut.end]
+    return ", ".join(f"{int(t) // 60}:{int(t) % 60:02d} +{gain:.0f} dB" for t, gain in offsets) or "none"
+
+
+# --- 5-9. Threshold, captions, reframing, gaming layout, encode -----------------------
 
 def select(candidates: list[Candidate], threshold: float, top_n: int | None) -> list[Candidate]:
     """The moments to render: scored ones at or over the threshold, best first. If nothing
@@ -137,9 +152,11 @@ def select(candidates: list[Candidate], threshold: float, top_n: int | None) -> 
 
 
 def render_clips(
-    media: Media, threshold: float, top_n: int | None, reframe_clips: bool, progress: Progress = None
+    media: Media, threshold: float, top_n: int | None, reframe_clips: bool, progress: Progress = None,
+    clip_format: str = "podcast", cam_share: float | None = None,
 ) -> list[Path]:
-    """Cut, caption, reframe and encode the selected moments in moments.json. No API calls."""
+    """Cut, caption, reframe (or lay out, for gaming) and encode the selected moments in
+    moments.json. No API calls. A gaming clip is always vertical, whatever reframe_clips says."""
     candidates = load_candidates(media)
     kept = select(candidates, threshold, top_n)
     print_table(candidates, kept, threshold)
@@ -150,12 +167,26 @@ def render_clips(
     folder = out_dir(media.video)
     names = {id(c): f"{rank:02d}_{_slug(c.moment.title)}" for rank, c in enumerate(kept, 1)}
     info = render.probe_video(media.video)
+    planner = None
+    if clip_format == "gaming":
+        planner = gaming.Planner(media.video, info, folder, config.GAMING_CAM_SHARE if cam_share is None else cam_share)
+        if progress:
+            progress(0.0, "Finding the facecam")
+        planner.facecam  # once for the video, before the first clip
     written = []
     for i, c in enumerate(kept, 1):
         name = names[id(c)]
         video_filter = ""
         width, height = info.width, info.height
-        if reframe_clips:
+        seam = None
+        if planner:
+            if progress:
+                progress((i - 1) / len(kept), f"Laying out clip {i} of {len(kept)}")
+            layout = planner.plan(c.cut)
+            c.layout = layout.to_dict()
+            video_filter = gaming.layout_filter(layout)
+            width, height, seam = layout.output_width, layout.output_height, layout.seam
+        elif reframe_clips:
             if progress:
                 progress((i - 1) / len(kept), f"Reframing clip {i} of {len(kept)}")
             plan = reframe.plan(media.video, c.cut, media.words, info, c.crop)
@@ -167,16 +198,18 @@ def render_clips(
         # Captions are written for the frame the clip is delivered in, and burned into it
         # by the same encode; the .srt alongside keeps the clip's own timings either way.
         lines = captions.build_lines(c.cut, media.sentences, media.words)
-        captions.write_ass(lines, folder / f"{name}.ass", width, height)
+        captions.write_ass(lines, folder / f"{name}.ass", width, height, center_y=seam)
         captions.write_srt(lines, folder / f"{name}.srt")
         log.info("Rendering %d/%d: %s (%.0fs, %dx%d)", i, len(kept), name, c.cut.duration, width, height)
         if progress:
-            progress((i - 1 + 0.5 * reframe_clips) / len(kept), f"Encoding clip {i} of {len(kept)}")
+            progress((i - 1 + 0.5 * bool(planner or reframe_clips)) / len(kept), f"Encoding clip {i} of {len(kept)}")
         tail = c.cut.end - media.words[c.cut.last_word].end  # fade the audio out after the last word
         render.render_clip(
             media.video, c.cut.start, c.cut.end, folder / f"{name}.ass", folder / f"{name}.mp4", video_filter, tail
         )
         written.append(folder / f"{name}.mp4")
+    if planner:
+        planner.close()
     write_report(media.video, candidates, names)
     log.info("Clips written to %s", folder)
     return written
@@ -231,6 +264,7 @@ def write_report(video: Path, candidates: list[Candidate], names: dict[int, str]
                 "sentences": [c.cut.first_sentence, c.cut.last_sentence],
                 "transcript": c.text,
                 **({"crop": c.crop} if c.crop else {}),
+                **({"layout": c.layout} if c.layout else {}),
             }
             for c in candidates
         ],

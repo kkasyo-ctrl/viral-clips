@@ -13,6 +13,8 @@ Videos are paths or file names inside Data/Input_video; with none given, every v
     python main.py render --threshold 0.3 --top-n 5   # render the best five over 0.3
     python main.py render --no-reframe                # keep the source aspect ratio
     python main.py run --no-render                    # everything up to the scores
+    python main.py run --format gaming                # a stream: facecam on top, game below
+    python main.py render --format gaming --cam-share 0.4   # give the cam 40% of the height
 """
 import argparse
 import logging
@@ -34,13 +36,16 @@ def run_stage(command: str, video: Path, args: argparse.Namespace) -> None:
     if command == "transcribe":
         return
     if command in ("find", "run"):
-        pipeline.find(media)
+        pipeline.find(media, args.format)
     if command in ("score", "run"):
-        candidates = pipeline.score(media)
+        candidates = pipeline.score(media, args.format)
         if command == "score":
             pipeline.print_table(candidates, [], config.PROB_THRESHOLD)
     if command == "render" or (command == "run" and not args.no_render):
-        pipeline.render_clips(media, args.threshold, args.top_n, config.REFRAME and not args.no_reframe)
+        pipeline.render_clips(
+            media, args.threshold, args.top_n, config.REFRAME and not args.no_reframe,
+            clip_format=args.format, cam_share=args.cam_share,
+        )
     elif command == "run":
         pipeline.print_table(pipeline.load_candidates(media), [], config.PROB_THRESHOLD)
 
@@ -67,18 +72,26 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, metavar="command")
     videos = argparse.ArgumentParser(add_help=False)
     videos.add_argument("videos", nargs="*", help="video files (default: everything in Data/Input_video)")
+    clip_format = argparse.ArgumentParser(add_help=False)
+    clip_format.add_argument("--format", choices=config.FORMATS, default=config.CLIP_FORMAT,
+                             help="podcast: reframe onto the speaker; gaming: facecam above the game "
+                                  "(default: %(default)s)")
     rendering = argparse.ArgumentParser(add_help=False)
     rendering.add_argument("--threshold", type=float, default=config.PROB_THRESHOLD,
                            help="minimum p_viral for a moment to become a clip (default: %(default)s)")
     rendering.add_argument("--top-n", type=int, help="render at most this many clips per video")
     rendering.add_argument("--no-reframe", action="store_true",
-                           help="render at the source aspect ratio instead of cropping to vertical")
+                           help="render at the source aspect ratio instead of cropping to vertical (podcast only)")
+    rendering.add_argument("--cam-share", type=float, default=config.GAMING_CAM_SHARE,
+                           help="gaming: the facecam's share of the frame height, %g-%g (default: %%(default).2f)"
+                                % config.GAMING_CAM_SHARE_RANGE)
 
     sub.add_parser("transcribe", parents=[videos], help="transcribe with ElevenLabs (skipped if cached)")
-    sub.add_parser("find", parents=[videos], help="ask the LLM for moments; overwrites moments.json")
-    sub.add_parser("score", parents=[videos], help="score the moments in moments.json with Jev")
-    sub.add_parser("render", parents=[videos, rendering], help="cut and render clips from moments.json (no API calls)")
-    run = sub.add_parser("run", parents=[videos, rendering], help="every stage in order")
+    sub.add_parser("find", parents=[videos, clip_format], help="ask the LLM for moments; overwrites moments.json")
+    sub.add_parser("score", parents=[videos, clip_format], help="score the moments in moments.json with Jev")
+    sub.add_parser("render", parents=[videos, clip_format, rendering],
+                   help="cut and render clips from moments.json (no API calls)")
+    run = sub.add_parser("run", parents=[videos, clip_format, rendering], help="every stage in order")
     run.add_argument("--no-render", action="store_true", help="stop after scoring")
     return parser
 
